@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import concurrent.futures
 import json
+from datetime import datetime
+from examples import examples
 
 # Load environment variables (for API key)
 load_dotenv()
@@ -17,10 +19,13 @@ client = anthropic.Anthropic(
 )
 
 # File paths
-INPUT_CSV = "sampling-25.csv"
-OUTPUT_CSV = "argument_components_results.csv"
-BATCH_SIZE = 3  # Number of texts to process in a single batch
+INPUT_CSV = "test.csv"
+INPUT_DIR = "test"
+OUTPUT_CSV = f"argument_components_results_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.csv"
+OUTPUT_DIR = "test_output"
+BATCH_SIZE = 5  # Number of texts to process in a single batch
 MAX_WORKERS = 3  # Number of concurrent batches to process
+EXAMPLES = examples
 
 # Define the prompt template
 PROMPT_TEMPLATE = """
@@ -37,7 +42,10 @@ Segment the following essay into distinct argument components:
 After each argument component, insert the corresponding marker, e.g. insert <Lead> after a lead component. Keep the original text in the same order without adding, removing, or altering any words (other than inserting the markers). Do not correct for spelling, grammar, or punctuation errors in the original text.
 
 # GUIDELINES
-Identify each coherent segment that forms a logical unit of the argument (e.g., claims, premises, evidence, or conclusions). If there are multiple claims, counterclaims, or rebuttals, identify each as a separate component with an enumeration added to the marker. Make sure that the markers are not nested.
+Identify each coherent segment that forms a logical unit of the argument (e.g., claims, premises, evidence, or conclusions). Make sure that the markers are not nested.
+# EXAMPLES
+Here are some examples of how to identify and mark the argument components. The orginal text and the tagged text are separated by a line of dashes are provided for each example.
+{EXAMPLES}
 
 Text to analyze:
 {text}
@@ -58,7 +66,7 @@ def process_batch(batch_texts):
                 # Call Anthropic API
                 response = client.messages.create(
                     model="claude-3-7-sonnet-20250219",  # You can adjust the model as needed
-                    max_tokens=2000,
+                    max_tokens=8000,
                     temperature=0,
                     system="""You are an expert at identifying essay argument components in text.
 
@@ -72,7 +80,7 @@ def process_batch(batch_texts):
                     - Concluding Statement: A statement that restates the claims and summarizes the argument
                     """,
                     messages=[
-                        {"role": "user", "content": PROMPT_TEMPLATE.format(text=text)}
+                        {"role": "user", "content": PROMPT_TEMPLATE.format(text=text, EXAMPLES=EXAMPLES)}
                     ]
                 )
                 
@@ -123,13 +131,14 @@ def main():
         
         # Check if the CSV has an essay-id column
         if 'essay-id' in df.columns:
-            print("Found 'essay-id' column, will process text files from the sampling-25 directory")
+            print(f"Found 'essay-id' column, will process text files from the {INPUT_DIR} directory")
             
             # Process each file
             for idx, filename in enumerate(df["essay-id"]):
+                print(f"Processing file {filename}")
                 if filename.endswith(".txt"):
                     try:
-                        file_path = os.path.join("sampling-25", filename)
+                        file_path = os.path.join(INPUT_DIR, filename)
                         if os.path.exists(file_path):
                             with open(file_path, "r", encoding="utf-8") as f:
                                 text = f.read()
@@ -164,7 +173,8 @@ def main():
                     all_results.extend(batch_results)
                     
                     # Save intermediate results
-                    pd.DataFrame(all_results).to_csv(OUTPUT_CSV, index=False)
+                    output_file = os.path.join(OUTPUT_DIR, f"openai_batch_{batch_idx + 1}.csv")
+                    pd.DataFrame(all_results).to_csv(output_file, index=False)
                     print(f"Saved progress (batch {batch_idx + 1}/{len(batches)}, total texts: {len(all_results)}/{len(texts)})")
                     
                 except Exception as e:
