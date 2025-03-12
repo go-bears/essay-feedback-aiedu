@@ -37,7 +37,7 @@ def get_essay(id: str) -> str:
     Get the body of an essay
     """
 
-    with open(f"{ESSAYS_FOLDER}/{id}", "r") as f:
+    with open(f"{ESSAYS_FOLDER}/{f"{id.rstrip(".txt")}.txt"}", "r") as f:
         return (
             f
             .read()
