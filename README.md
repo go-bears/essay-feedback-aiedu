@@ -1,23 +1,27 @@
-<<<<<<< HEAD
-# essay-feedback-aiedu
-=======
 # Argument Component Extraction
 
-This script processes text samples from a CSV file, sends them to the Anthropic API to identify argument components, and saves the results to a new CSV file.
+This repo contains a python module (`essay_feedback`) that processes text samples from a CSV file, sends them to either the Anthropic API or OpenAI API to identify argument components, and saves the results to a new CSV file.
 
 ## Setup
 
-1. Install the required dependencies:
+1. Install the package:
    ```
-   pip install -r requirements.txt
+   pip install -e essay_feedback
    ```
 
-2. Create a `.env` file in the same directory as the script with your Anthropic API key:
+2. Create a `.env` file in the same directory as your script (not necessarily the package!) with your Anthropic API key:
    ```
    ANTHROPIC_API_KEY=your_api_key_here
+   OPENAI_API_KEY=your_other_api_key_here
    ```
 
-3. Make sure your input CSV file (`sampling-25.csv`) is in the same directory as the script.
+3. Import the package in your script
+   ```python
+   import essay_feedback
+   from essay_feedback.data import *
+   ```
+
+<!-- 4. Make sure your input CSV file (`sampling-25.csv`) is in the same directory as the script. -->
 
 ## Usage
 

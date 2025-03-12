@@ -1,5 +1,4 @@
 from enum import Enum
-from functools import cache
 from typing import Literal
 import importlib.resources
 import json
@@ -16,6 +15,11 @@ type SupportedAPI = Literal["oai", "anthropic"] # TODO: make sure adding an entr
 
 # mustache templating library
 import chevron
+import dotenv
+try:
+    dotenv.load_dotenv()
+except:
+    print(f"Could not load environment variables. Continuing without them ...")
 
 MODULE_FOLDER = importlib.resources.files("essay_feedback")
 
@@ -66,9 +70,8 @@ def _get_llm_call_args(essay_id: str, model: str, api: SupportedAPI) -> dict:
                 ]
             }
 
-@cache
-def call_llm(essay_id: str, model: str, api: SupportedAPI) -> str:
-    args = _get_llm_call_args(essay_id, model, api)
+def call_llm(essay_id: str, model: str, api: SupportedAPI, params: dict = {}) -> str:
+    args = _get_llm_call_args(essay_id, model, api) | params
     match api:
         case "oai":
             client = OpenAI()
