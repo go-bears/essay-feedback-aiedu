@@ -11,7 +11,7 @@ from anthropic.types import Message, TextBlock
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request
 from anthropic.types.messages.message_batch_succeeded_result import MessageBatchSucceededResult
-type SupportedAPI = Literal["oai", "anthropic"] # TODO: make sure adding an entry here breaks type checking
+SupportedAPI = Literal["oai", "anthropic"] # TODO: make sure adding an entry here breaks type checking
 
 # mustache templating library
 import chevron
@@ -37,7 +37,7 @@ def get_essay(id: str) -> str:
     Get the body of an essay
     """
 
-    with open(f"{ESSAYS_FOLDER}/{f"{id.rstrip(".txt")}.txt"}", "r") as f:
+    with open(f"{ESSAYS_FOLDER}/{id.rstrip('.txt') + '.txt'}", "r") as f:
         return (
             f
             .read()
