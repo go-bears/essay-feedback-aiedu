@@ -23,8 +23,8 @@ def process_essay(processed_text):
         tag = re.sub(r'\d+', '', tag)
         text = match.group(2).strip()
         words = text.split()  # Split the segment text by whitespace.
-        # Compute indices for this segment, starting from cumulative + 1.
-        indices = list(range(cumulative + 1, cumulative + len(words) + 1))
+        # Compute indices for this segment, starting from cumulative .
+        indices = list(range(cumulative, cumulative + len(words)))
         cumulative += len(words)
         segments.append((tag, indices))
     return segments
