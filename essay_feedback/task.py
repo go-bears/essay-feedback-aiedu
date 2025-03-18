@@ -50,4 +50,3 @@ class Task:
         ]
 
 Annotate = functools.partial(Task, system_prompt_file="annotate.system.mustache", message_prompt_file="annotate.message.mustache")
-# Score = functools.partial(Task, system_prompt_file="annotate.system.mustache", message_prompt_file="annotate.message.mustache")
