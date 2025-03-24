@@ -11,6 +11,7 @@ from anthropic.types import Message, TextBlock
 from anthropic.types.message_create_params import MessageCreateParamsNonStreaming
 from anthropic.types.messages.batch_create_params import Request
 from anthropic.types.messages.message_batch_succeeded_result import MessageBatchSucceededResult
+from ollama import chat, ChatResponse
 
 import dotenv
 try:
@@ -23,31 +24,41 @@ from .task import Task
 @dataclass
 class LLM:
     model: str
-    api: Literal["oai", "anthropic"]
+    api: Literal["oai", "anthropic", "ollama"]
 
     def _get_call_args(self, system_prompt: str, message_prompt: str) -> dict:
+        args = { 'model' : self.model, 'stream' : False }
+        system_message = { "role" : "system",
+                           "content" : system_prompt }
+        user_message = { "role" : "user",
+                         "content" : message_prompt }
         match self.api:
             case "oai":
-                return {
-                    'model' : self.model,
+                return args | {
                     'messages' : [
-                        { "role" : "system",
-                        "content" : system_prompt },
-                        { "role" : "user",
-                        "content" : message_prompt },
+                        system_message,
+                        user_message,
                     ]
                 }
             case "anthropic":
-                return {
-                    'model' : self.model,
+                return args | {
                     'system' : system_prompt,
+                    'messages' : [ user_message ]
+                }
+            case "ollama":
+                return args | {
                     'messages' : [
-                        { "role" : "user",
-                        "content" : message_prompt },
+                        system_message,
+                        user_message,
                     ]
                 }
 
     def call(self, task: Task, index: int | None = None, params: dict = {}) -> str | list[str]:
+        """
+        Eagerly generate completions on the provided Task. If `index` is provided, only complete 
+        it on the essay at that index (return type `str`). If `index` is None, complete all essays 
+        in the task (return type `list[str]`).
+        """
         if index is None:
             return [
                 self.call(task, i, params)
@@ -70,7 +81,13 @@ class LLM:
                 msg = anthropic_resp.content[0]
                 assert isinstance(msg, TextBlock), f"Got a non-text block from anthropic!: {msg}"
                 return msg.text
-    
+            case "ollama":
+                ollama_resp: ChatResponse = chat(**args)
+                assert isinstance(ollama_resp, ChatResponse), f"Got a non-chat completion on the ollama chat endpoint!: {ollama_resp}"
+                ollama_msg = ollama_resp.message.content
+                assert ollama_msg is not None, f"Got {ollama_msg} for ollama response content!"
+                return ollama_msg
+
     class BatchStatus(Enum):
         Incomplete = 1
         Failed = -1
@@ -118,6 +135,8 @@ class LLM:
                     ]
                 )
                 return anthropic_batch.id
+            case "ollama":
+                raise NotImplementedError(f"Ollama does not support batched inference. Use `<LLM>.call` instead.")
     
     def get_batch(self, batch_id: str) -> Literal["LLM.BatchStatus.Incomplete", "LLM.BatchStatus.Failed"] | dict[str, str | Literal["LLM.BatchStatus.Failed"]]:
         match self.api:
@@ -166,3 +185,5 @@ class LLM:
                         assert isinstance(content_block, TextBlock)
                         outputs[essay_id] = content_block.text
                 return outputs
+            case "ollama":
+                raise NotImplementedError(f"Ollama does not support batched inference. Use `<LLM>.call` instead.")
