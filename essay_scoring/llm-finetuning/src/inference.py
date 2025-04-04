@@ -118,7 +118,7 @@ class Inference:
         output = [text async for text in self._stream(input)]
         return "".join(output)
 
-    @modal.web_endpoint()
+    @modal.fastapi_endpoint()
     async def web(self, input: str):
         return StreamingResponse(self._stream(input), media_type="text/event-stream")
 
@@ -134,16 +134,17 @@ class Inference:
 
 
 @app.local_entrypoint()
-def inference_main(run_name: str = "", prompt: str = ""):
-    if not prompt:
-        prompt = input(
-            "Enter a prompt (including the prompt template, e.g. [INST] ... [/INST]):\n"
+def inference_main(run: str = "", prompt: str = ""):
+    while True:
+        if not prompt:
+            prompt = input(
+                "Enter a prompt (including the prompt template, e.g. [INST] ... [/INST]):\n"
+            )
+        print(
+            Colors.GREEN, Colors.BOLD, f"🧠: Querying model {run}", Colors.END, sep=""
         )
-    print(
-        Colors.GREEN, Colors.BOLD, f"🧠: Querying model {run_name}", Colors.END, sep=""
-    )
-    response = ""
-    for chunk in Inference(run_name).completion.remote_gen(prompt):
-        response += chunk  # not streaming to avoid mixing with server logs
-    print(Colors.BLUE, f"👤: {prompt}", Colors.END, sep="")
-    print(Colors.GRAY, f"🤖: {response}", Colors.END, sep="")
+        response = ""
+        for chunk in Inference(run).completion.remote_gen(prompt):
+            response += chunk  # not streaming to avoid mixing with server logs
+        print(Colors.BLUE, f"👤: {prompt}", Colors.END, sep="")
+        print(Colors.GRAY, f"🤖: {response}", Colors.END, sep="")

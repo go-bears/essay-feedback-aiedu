@@ -61,14 +61,14 @@ def main(args):
                 prompt_information=prompt_information,
                 essay=essay_text,
                 rubric=rubric,
-                output_format=output_format,
-                training_val=domain1_score if essay_set != 2 else f"{domain1_score} {domain2_score}"
+                output_format=output_format
             )
             
             # Build the JSON object for this essay.
             data = {
-                "system_prompt": system_prompt,
-                "message": rendered_message
+                "instruction": system_prompt,
+                "input": rendered_message,
+                "output" : f"{domain1_score if essay_set != 2 else f"{domain1_score} {domain2_score}"}"
             }
             
             # Write out the JSON object as one line in the jsonl file.

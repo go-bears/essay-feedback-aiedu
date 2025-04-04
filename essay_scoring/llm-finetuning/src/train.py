@@ -78,7 +78,7 @@ def merge(run_folder: str, output_dir: str):
 
 
 @app.function(image=axolotl_image, timeout=30 * MINUTES, volumes=VOLUME_CONFIG)
-def launch(config_raw: dict, data_raw: str, run_to_resume: str, preproc_only: bool):
+def launch(config_raw: dict, data_raw: str, val_raw: str, run_to_resume: str, preproc_only: bool):
     import yaml
     from huggingface_hub import snapshot_download
 
@@ -111,9 +111,12 @@ def launch(config_raw: dict, data_raw: str, run_to_resume: str, preproc_only: bo
     with (
         open(f"{run_folder}/config.yml", "w") as config_file,
         open(f"{run_folder}/{config['datasets'][0]['path']}", "w") as data_file,
+        # val
+        open(f"{run_folder}/{config['test_datasets'][0]['path']}", "w") as val_file,
     ):
         config_file.write(config_raw)
         data_file.write(data_raw)
+        val_file.write(val_raw)
     VOLUME_CONFIG["/runs"].commit()
 
     if preproc_only:
@@ -143,15 +146,16 @@ def launch(config_raw: dict, data_raw: str, run_to_resume: str, preproc_only: bo
 @app.local_entrypoint()
 def main(
     config: str,
-    data: str,
+    train: str,
+    val: str,
     merge_lora: bool = True,
     preproc_only: bool = False,
     run_to_resume: str = None,
 ):
     # Read config and data source files and pass their contents to the remote function.
-    with open(config, "r") as cfg, open(data, "r") as dat:
+    with open(config, "r") as cfg, open(train, "r") as train_dat, open(val, "r") as val_dat:
         run_name, launch_handle = launch.remote(
-            cfg.read(), dat.read(), run_to_resume, preproc_only
+            cfg.read(), train_dat.read(), val_dat.read(), run_to_resume, preproc_only
         )
 
     # Write a local reference to the location on the remote volume with the run
