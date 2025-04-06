@@ -2,14 +2,14 @@
 # Model Configuration: LLaMA-3 8B
 ###
 
-base_model: meta-llama/Llama-3.1-8B-Instruct
+base_model: unsloth/gemma-3-12b-it-unsloth-bnb-4bit
 sequence_len: 32768
 
 # base model weight quantization
-load_in_8bit: true
+# load_in_8bit: true 
 
 # attention implementation
-flash_attention: true
+eager_attention: true
 
 # finetuned adapter config
 adapter: lora
@@ -47,16 +47,14 @@ test_datasets:
     data_files:
       - val.json
 
-
-special_tokens:
-  pad_token: <|end_of_text|>
-
 ###
 # Training Configuration
 ###
 
 # random seed for better reproducibility
 seed: 117
+
+# deepspeed: /root/axolotl/deepspeed/zero3.json
 
 # optimizer config
 optimizer: adamw_bnb_8bit
@@ -76,8 +74,14 @@ logging_steps: 1
 eval_steps: 0.05
 
 # training performance optimization config
-bf16: auto
-tf32: false
+bf16: true
+bnb_config_kwargs:
+  # These are default values
+  llm_int8_has_fp16_weight: false
+  bnb_4bit_quant_type: fp4
+  bnb_4bit_use_double_quant: true
+
+# gptq: true
 gradient_checkpointing: true
 
 ###

@@ -17,13 +17,15 @@ AXOLOTL_REGISTRY_SHA = (
 ALLOW_WANDB = os.environ.get("ALLOW_WANDB", "false").lower() == "true"
 
 axolotl_image = (
-    modal.Image.from_registry(f"winglian/axolotl@sha256:{AXOLOTL_REGISTRY_SHA}")
+    modal.Image.from_registry(f"axolotlai/axolotl:main-latest")
     .pip_install(
-        "huggingface_hub==0.23.2",
+        "huggingface_hub[hf_transfer]==0.26.2",
         "hf-transfer==0.1.5",
         "wandb==0.16.3",
         "fastapi==0.110.0",
         "pydantic==2.6.3",
+        "transformers==4.50.3",
+        "unsloth"
     )
     .env(
         dict(
@@ -38,7 +40,9 @@ axolotl_image = (
 
 vllm_image = (
     modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
-    .pip_install("vllm==0.5.1", "torch==2.3.0")
+    .pip_install("vllm==0.8.2", "torch==2.6.0", "transformers==4.50.3")
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # faster model transfers
+    .env({"VLLM_USE_V1": "0"})
     .entrypoint([])
 )
 
