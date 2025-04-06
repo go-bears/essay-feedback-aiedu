@@ -1,0 +1,3 @@
+modal run --detach -m src.train --config=config/gemma-3.yml --train=data/argumentative-asap-train.jsonl --val=data/argumentative-asap-val.jsonl
+
+modal run --detach -m src.train-unsloth --model=unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit
