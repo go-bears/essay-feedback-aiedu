@@ -1,3 +1,4 @@
+import argparse
 import os
 import csv
 import time
@@ -8,35 +9,49 @@ from tqdm import tqdm
 import json
 from datetime import datetime
 
-from prompts import system_prompt, essay_prompt, essay_set_2_essay_prompt, load_prompts_rubrics
+from prompts import *
 
 # import essay_feedback
 # from essay_feedback.data import *
 BASE_DIR = "/home/kaiju/melissa_dev/ai-ed/"
-
-model = "llama3.1"
-output_dir = "base-scoring-outputs"
-os.makedirs(os.path.join(output_dir, model), exist_ok=True)
-
 PROMPTS_PATH = os.path.join(BASE_DIR , "essay_scoring", "asap-aes", "prompts")
 RUBRICS_PATH = os.path.join(BASE_DIR "essay_scoring", "asap-aes", "rubrics")
 
+default_model = "llama3.1"
+default_output_dir = "base-scoring-outputs"
+
+def cli_main():
+    """
+    Command line interface for the essay scoring script.
+    This function parses command line arguments, sets up the model and output directory,
+
+    """
+    parser = argparse.ArgumentParser(description="Essay Scoring Script")
+    parser.add_argument("--model", type=str, default=default_model, help="LLM Model name")
+    parser.add_argument("--output_dir", type=str, default=default_output_dir, help="Output directory")
+    args = parser.parse_args()
+
+    model = args.model
+    output_dir = args.output_dir
+    os.makedirs(os.path.join(output_dir, model), exist_ok=True)
+
+    return model, output_dir
+
+
+model, output_dir = cli_main()
 date_str = datetime.now().strftime("%Y-%m-%d-%H-%M")
 output_file = os.path.join(output_dir, model, f"{model}-scoring-output-{date_str}.tsv")
 
 
 prompt_rubric_map = load_prompts_rubrics(PROMPTS_PATH, RUBRICS_PATH)
-
-essay_data = pd.read_csv(os.path.join(BASE_DIR, 
-                                      "essay_argument_annotation", 
-                                      "processed_asap_aes_data.tsv"),
+input_file = os.path.join(BASE_DIR, "essay_argument_annotation", "processed_asap_aes_data.tsv")
+essay_data = pd.read_csv(os.path.join(input_file,
                                       sep="\t", 
                                       encoding="latin1")
 
 data_out = []
 
 for idx, row in enumerate(tqdm(essay_data.iterrows())):
-    print(row)
     essay_id = row[1]["essay_id"]
     essay_set = row[1]["essay_set"]
     essay = row[1]["essay"]
@@ -83,9 +98,28 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
     })
 
     if idx % 100 == 0:
+        print("Saving intermediate results...")
+        print(row)
+        print(response.message.content)
+
         pd.DataFrame(data_out).to_csv(output_file, index=False, sep="\t")
 
 pd.DataFrame(data_out).to_csv(output_file, index=True, sep="\t")
+print("Output saved to:", output_file)
+
+
+if __name__ == "__main__":
+    print("Running the script...")
+    print({"model": model, 
+           "output_dir": output_dir,
+           "output file": output_file,
+          "input_file": input_file,}
+          )
+    
+    print("Essay data preview:")
+    print(essay_data.head())
+
+
 
 
 
