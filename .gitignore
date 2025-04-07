@@ -4,3 +4,4 @@
 **/venv
 **.DS_Store
 **.jsonl
+**../.DS_Store

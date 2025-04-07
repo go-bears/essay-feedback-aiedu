@@ -3,6 +3,8 @@ import json
 import chevron
 import os
 import argparse
+import math
+
 
 # Define the folder where your mustache templates are stored.
 TEMPLATE_FOLDER = "templates"
@@ -13,7 +15,7 @@ def _get_templated(name: str, **kwargs) -> str:
     with open(template_path, "r") as f:
         return chevron.render(f, data=kwargs)
 
-def main(args):
+def main(args): 
     # Read the train IDs (should contain at least an 'essay_id' column)
     train_ids_df = pd.read_csv(args.train_ids_csv)
     val_ids_df = pd.read_csv(args.val_ids_csv)
@@ -31,7 +33,7 @@ def main(args):
     # Render the system prompt once from annotate.system.mustache
     system_prompt = _get_templated("annotate.system")
     
-    for current_outfile, current_df in zip([args.output_train_jsonl, args.output_val_jsonl], [train_df, val_df]):
+    for split, current_outfile, current_df in zip(["train", "validation"], [args.output_train_jsonl, args.output_val_jsonl], [train_df, val_df]):
         # Open the output jsonl file for writing
         with open(current_outfile, "w") as out_f:
             # Iterate over each matching essay row
@@ -39,6 +41,10 @@ def main(args):
                 essay_set = row['essay_set']
                 essay_text = row['essay']
                 domain1_score = int(row["domain1_score"])
+                # Process essay set 1 by halving due to rubric mismatch
+                if essay_set == 1:
+                    print("Changing score from", domain1_score, "to", math.ceil(domain1_score/2))
+                    domain1_score = int(math.ceil(domain1_score/2))
                 domain2_score = int(row["domain2_score"]) if row["domain2_score"] is not None else None
                 
                 # Read the corresponding prompt from prompts/{essay_set}.txt
@@ -76,8 +82,8 @@ def main(args):
                 
                 # Write out the JSON object as one line in the jsonl file.
                 out_f.write(json.dumps(data) + "\n")
-    
         print(f"Generated {current_outfile}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -89,9 +95,9 @@ if __name__ == "__main__":
                         help="Path to the CSV file with val essay IDs")
     parser.add_argument("--training_set_tsv", default="asap-aes/training_set_rel3.tsv", 
                         help="Path to the training_set_rel3 TSV file")
-    parser.add_argument("--output_train_jsonl", default="argumentative-asap-train.jsonl", 
+    parser.add_argument("--output_train_jsonl", default="train.jsonl", 
                         help="Path for the output JSONL file")
-    parser.add_argument("--output_val_jsonl", default="argumentative-asap-val.jsonl", 
+    parser.add_argument("--output_val_jsonl", default="validation.jsonl", 
                         help="Path for the val output JSONL file")
     parser.add_argument("--output_format_default", default="Your output should consist of one number, the score", 
                         help="Output format for essays (default value)")
