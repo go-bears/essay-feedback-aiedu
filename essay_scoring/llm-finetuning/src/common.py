@@ -9,22 +9,29 @@ APP_NAME = "example-axolotl"
 MINUTES = 60  # seconds
 HOURS = 60 * MINUTES
 
-# Axolotl image hash corresponding to main-20240705-py3.11-cu121-2.3.0
-AXOLOTL_REGISTRY_SHA = (
-    "9578c47333bdcc9ad7318e54506b9adaf283161092ae780353d506f7a656590a"
-)
-
 ALLOW_WANDB = os.environ.get("ALLOW_WANDB", "false").lower() == "true"
 
+LLAMA_CPP_RELEASE = "b4568"
+MINUTES = 60
+
+cuda_version = "12.4.0"  # should be no greater than host CUDA version
+flavor = "devel"  #  includes full CUDA toolkit
+operating_sys = "ubuntu22.04"
+tag = f"{cuda_version}-{flavor}-{operating_sys}"
+
 axolotl_image = (
-    modal.Image.from_registry(f"axolotlai/axolotl:main-latest")
+    # modal.Image.from_registry(f"axolotlai/axolotl:main-latest")
+    # modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
+    modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10")
+    .apt_install(
+        "git", "build-essential", "cmake", "curl", "libcurl4-openssl-dev"
+    )
     .pip_install(
-        "huggingface_hub[hf_transfer]==0.26.2",
+        "huggingface_hub[hf_transfer]==0.30.1",
         "hf-transfer==0.1.5",
-        "wandb==0.16.3",
         "fastapi==0.110.0",
-        "pydantic==2.6.3",
-        "transformers==4.50.3",
+        "pydantic",
+        "transformers==4.51.0",
         "unsloth"
     )
     .env(
@@ -49,7 +56,7 @@ vllm_image = (
 app = modal.App(
     APP_NAME,
     secrets=[
-        modal.Secret.from_name("huggingface-secret-joaquin"),
+        modal.Secret.from_name("huggingface-rw-joaquin"),
         modal.Secret.from_dict({"ALLOW_WANDB": os.environ.get("ALLOW_WANDB", "false")}),
         *([modal.Secret.from_name("wandb")] if ALLOW_WANDB else []),
     ],
