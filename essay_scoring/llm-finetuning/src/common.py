@@ -4,7 +4,7 @@ from typing import Union
 
 import modal
 
-APP_NAME = "example-axolotl"
+APP_NAME = "ft-gemma-3"
 
 MINUTES = 60  # seconds
 HOURS = 60 * MINUTES

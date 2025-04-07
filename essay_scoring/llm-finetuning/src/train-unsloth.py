@@ -9,39 +9,65 @@ from .common import (
     HOURS,
     MINUTES,
     VOLUME_CONFIG,
+    Colors
 )
 
-GPU_CONFIG = "A100-80GB:2"
+SUPPORTED_MODELS = {
+    "llama" : "Meta-Llama-3.1-8B-Instruct-bnb-4bit",
+    "gemma" : "unsloth/gemma-3-12b-it-bnb-4bit"
+}
+
+GPU_CONFIG = "A100:2"
 SINGLE_GPU_CONFIG = os.environ.get("GPU_CONFIG", "a10g:1")
 
 
 def model_setup(model_handle: str, max_seq_length: int, dtype, load_in_4bit):
-    from unsloth import FastLanguageModel
+    from unsloth import FastLanguageModel, FastModel
     import torch
     
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = model_handle,
-        max_seq_length = max_seq_length,
-        dtype = dtype,
-        load_in_4bit = load_in_4bit,
-        # token = "hf_...", # use one if using gated models like meta-llama/Llama-2-7b-hf
-    )
     
     # LoRa adapters
-    model = FastLanguageModel.get_peft_model(
-        model,
-        r = 16, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
-        target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
-                        "gate_proj", "up_proj", "down_proj",],
-        lora_alpha = 16,
-        lora_dropout = 0, # Supports any, but = 0 is optimized
-        bias = "none",    # Supports any, but = "none" is optimized
-        # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
-        use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
-        random_state = 3407,
-        use_rslora = False,  # We support rank stabilized LoRA
-        loftq_config = None, # And LoftQ
-    )
+    if model_handle == SUPPORTED_MODELS["llama"]:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name = model_handle,
+            max_seq_length = max_seq_length,
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+        )
+        model = FastLanguageModel.get_peft_model(
+            model,
+            r = 16, # Choose any number > 0 ! Suggested 8, 16, 32, 64, 128
+            target_modules = ["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj",],
+            lora_alpha = 16,
+            lora_dropout = 0, # Supports any, but = 0 is optimized
+            bias = "none",    # Supports any, but = "none" is optimized
+            # [NEW] "unsloth" uses 30% less VRAM, fits 2x larger batch sizes!
+            use_gradient_checkpointing = "unsloth", # True or "unsloth" for very long context
+            random_state = 3407,
+            use_rslora = False,  # We support rank stabilized LoRA
+            loftq_config = None, # And LoftQ
+        )
+    elif model_handle == SUPPORTED_MODELS["gemma"]:
+        model, tokenizer = FastModel.from_pretrained(
+            model_name = model_handle,
+            max_seq_length = max_seq_length, # Choose any for long context!
+            dtype = dtype,
+            load_in_4bit = load_in_4bit,
+        )
+        model = FastModel.get_peft_model(
+            model,
+            finetune_vision_layers     = False, # Turn off for just text!
+            finetune_language_layers   = True,  # Should leave on!
+            finetune_attention_modules = True,  # Attention good for GRPO
+            finetune_mlp_modules       = True,  # SHould leave on always!
+
+            r = 8,           # Larger = higher accuracy, but might overfit
+            lora_alpha = 8,  # Recommended alpha == r at least
+            lora_dropout = 0,
+            bias = "none",
+            random_state = 3407,
+        )
     return model, tokenizer
 
 def dataset_setup(tokenizer):
@@ -70,33 +96,43 @@ def dataset_setup(tokenizer):
     pass
 
     from datasets import load_dataset
-    dataset = load_dataset("jjordanoc/argumentative-asap", split = "train")
-    dataset = dataset.map(formatting_prompts_func, batched = True,)
-    return dataset
+    train_dataset = load_dataset("jjordanoc/argumentative-asap", split = "train") # TODO: streaming = True
+    train_dataset = train_dataset.map(formatting_prompts_func, batched = True,)
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split = "validation")
+    eval_dataset = eval_dataset.map(formatting_prompts_func, batched = True,)
+    return train_dataset, eval_dataset
 
 
-def train_loop(model, tokenizer, dataset, max_seq_length):
+def train_loop(model_name: str, model, tokenizer, train_dataset, eval_dataset, max_seq_length: int):
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
     trainer = SFTTrainer(
         model = model,
         tokenizer = tokenizer,
-        train_dataset = dataset,
+        train_dataset = train_dataset,
+        eval_dataset = eval_dataset,
         dataset_text_field = "text",
         max_seq_length = max_seq_length,
-        dataset_num_proc = 2,
+        dataset_num_proc = 4,
         packing = False, # Can make training 5x faster for short sequences.
         args = TrainingArguments(
-            per_device_train_batch_size = 2,
-            gradient_accumulation_steps = 1,
+            # Checkpoint in hub
+            push_to_hub=True,
+            hub_model_id=model_name,
+            # save_strategy="epoch",
+            save_strategy="steps",
+            hub_strategy="all_checkpoints",
             warmup_steps = 5,
-            num_train_epochs = 4, # Set this for 1 full training run.
-            # max_steps = 2,
+            # num_train_epochs = 3,
+            max_steps=10,
             learning_rate = 2e-4,
+            eval_strategy="steps",
+            eval_steps=5,
+            # eval_steps=150,
             fp16 = not is_bfloat16_supported(),
             bf16 = is_bfloat16_supported(),
-            logging_steps = 1,
+            logging_steps = 5,
             optim = "adamw_8bit",
             weight_decay = 0.01,
             lr_scheduler_type = "linear",
@@ -121,19 +157,19 @@ def train_unsloth(run_folder: str, model_handle: str, output_model_name: str):
     load_in_4bit = True # Use 4bit quantization to reduce memory usage. Can be False.
 
     model, tokenizer = model_setup(model_handle, max_seq_length, dtype, load_in_4bit)
-    dataset = dataset_setup(tokenizer)
-    model, trainer = train_loop(model, tokenizer, dataset, max_seq_length)
+    train_dataset, eval_dataset = dataset_setup(tokenizer)
+    model, trainer = train_loop(output_model_name, model, tokenizer, train_dataset, eval_dataset, max_seq_length)
 
     # Ensure volumes contain latest files.
-    VOLUME_CONFIG["/pretrained"].reload()
-    VOLUME_CONFIG["/runs"].reload()
+    # VOLUME_CONFIG["/pretrained"].reload()
+    # VOLUME_CONFIG["/runs"].reload()
 
     # Local save and then load
     model.save_pretrained(output_model_name)  # Local saving
     tokenizer.save_pretrained(output_model_name)
 
-    # Commit writes to volume.
-    VOLUME_CONFIG["/runs"].commit()
+    # # Commit writes to volume.
+    # VOLUME_CONFIG["/runs"].commit()
     
     from unsloth import FastLanguageModel
     model, tokenizer = FastLanguageModel.from_pretrained(
@@ -183,14 +219,21 @@ def launch_unsloth(model_handle: str, output_model_name: str):
 
 
 """
-To fine-tune llama 3.1, for example, use:
+Example use:
+
+Llama 3.1:
 modal run --detach -m src.train-unsloth --model=unsloth/Meta-Llama-3.1-8B-Instruct-bnb-4bit --output-name=llama31-ft-asap
+
+Gemma 3 12B:
+modal run --detach -m src.train-unsloth --model=unsloth/gemma-3-12b-it-GGUF --output-name=gemma3-ft-asap
 """
 @app.local_entrypoint()
 def main_unsloth(
    model: str,
    output_name: str
 ):
+    if model not in SUPPORTED_MODELS.values():
+        print(f"{Colors.BOLD} Model not supported {Colors.END}")
     run_name, launch_handle = launch_unsloth.remote(
         model, output_name
     )
