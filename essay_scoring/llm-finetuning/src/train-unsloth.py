@@ -11,7 +11,7 @@ from .common import (
     VOLUME_CONFIG,
 )
 
-GPU_CONFIG = "A100-80GB:1"
+GPU_CONFIG = "A100-80GB:2"
 SINGLE_GPU_CONFIG = os.environ.get("GPU_CONFIG", "a10g:1")
 
 
@@ -91,8 +91,8 @@ def train_loop(model, tokenizer, dataset, max_seq_length):
             per_device_train_batch_size = 2,
             gradient_accumulation_steps = 1,
             warmup_steps = 5,
-            # num_train_epochs = 4, # Set this for 1 full training run.
-            max_steps = 2,
+            num_train_epochs = 4, # Set this for 1 full training run.
+            # max_steps = 2,
             learning_rate = 2e-4,
             fp16 = not is_bfloat16_supported(),
             bf16 = is_bfloat16_supported(),
