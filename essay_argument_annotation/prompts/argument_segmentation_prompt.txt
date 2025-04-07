@@ -18,7 +18,7 @@ After each argument component, insert the corresponding markers, e.g. insert <Le
 - Not all essay contents need to be part of an argument segment.
 - Keep the original text in the same order without adding, removing, or altering any words (other than inserting the markers).
 - Do not correct for spelling, grammar, or punctuation errors in the original text.
-- Introduce a line break '\n' between components.
+- Introduce a line break '\\n' between components.
 - The essay will be anonymized by replacing revealing details with tags starting with '@' such as '@ORGANIZATION1', '@CAPS2', and '@DATE1'.
 - Utilize the essay prompt provided below to identify the correct labels for each component.
 
