@@ -31,7 +31,7 @@ def load_prompts_rubrics(prompts_path: str, rubrics_path: str) -> dict:
 
     return prompt_rubric_map
 
-system_prompt = """
+system_prompt = f"""
 You are a helpful essay assessement assistant that scores essays based on a rubric. Please provide a 
 numerical score for the provided essay according to the specified rubric.
 
@@ -50,7 +50,7 @@ The prompt is as follows:
 {prompt}
 """
 
-essay_prompt = """
+essay_prompt = f"""
 
 Review the given rubric and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
 
@@ -66,7 +66,7 @@ Output the score in JSON using the following format:
 }}
 """
 
-essay_set_2_essay_prompt = """
+essay_set_2_essay_prompt = f"""
 This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
 
 Please provide a numerical score for each domain based on the appropriate rubric.
