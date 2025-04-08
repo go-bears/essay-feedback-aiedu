@@ -24,13 +24,17 @@ def load_prompts(segmentation_prompt_file, essay_prompt_file, evaluation_prompt_
         essay_prompt = f.read()
     with open(segmentation_prompt_file, 'r') as f:
         segmentation_prompt = f.read().format(essay_prompt=essay_prompt)
+    segmentation_prompt = re.sub(r'\s+', " ", segmentation_prompt)
     segmentation_prompt = re.sub(r'\n', r'\\n', segmentation_prompt)
-    segmentation_prompt = re.sub(r'["’]', '\'', segmentation_prompt)
+    segmentation_prompt = re.sub(r'\\(?=$|[^n])', "", segmentation_prompt)
+    segmentation_prompt = re.sub(r'["’]', "'", segmentation_prompt)
 
     with open(evaluation_prompt_file, 'r') as f:
         evaluation_prompt = f.read()
+    evaluation_prompt = re.sub(r'\s+', " ", evaluation_prompt)
     evaluation_prompt = re.sub(r'\n', r'\\n', evaluation_prompt)
-    evaluation_prompt = re.sub(r'["’]', '\'', evaluation_prompt)
+    evaluation_prompt = re.sub(r'\\(?=$|[^n])', "", evaluation_prompt)
+    evaluation_prompt = re.sub(r'["’]', "'", evaluation_prompt)
     
     return {
         "segmentation_prompt": segmentation_prompt, 
