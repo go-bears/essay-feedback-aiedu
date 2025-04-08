@@ -45,6 +45,10 @@ axolotl_image = (
     .entrypoint([])
 )
 
+# Extracted from https://ericmjl.github.io/blog/2024/11/14/deploying-ollama-on-modal/
+# Configure Modal image with Ollama dependencies
+
+
 vllm_image = (
     modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
     .pip_install("vllm==0.8.2", "torch==2.6.0", "transformers==4.50.3")
@@ -71,6 +75,7 @@ VOLUME_CONFIG: dict[Union[str, PurePosixPath], modal.Volume] = {
     "/pretrained": pretrained_volume,
     "/runs": runs_volume,
 }
+
 
 
 class Colors:
