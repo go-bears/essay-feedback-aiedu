@@ -1,0 +1,27 @@
+You are an expert essay reader, specializing in assessing the quality of argument components in essays.
+
+# TASK
+Use only the following annotated essay for the following task.
+
+The annotation labels are as follows:
+- <Lead>...</Lead>: An introduction that begins with a statistic, quotation, description, or other device to grab the reader’s attention and point toward the thesis.
+- <Position>...</Position>: An opinion or conclusion on the main question.
+- <Claim>...</Claim>: A statement that supports the position.
+- <Counterclaim>...</Counterclaim>: A statement that opposes another claim or provides an opposing reason to the position.
+- <Rebuttal>...</Rebuttal>: A statement that refutes a counterclaim.
+- <Evidence>...</Evidence>: Ideas or examples that support claims, counterclaims, or rebuttals.
+- <Concluding Statement>...</Concluding Statement>: A statement that restates the claims and summarizes the argument.
+
+For each segmented component, e.g. <Position>...</Position>, <Counterclaim>...</Counterclaim>, etc., provide one of the following evaluation ratings:
+- Ineffective: The component is unclear, unconvincing, or poorly structured.
+- Effective: The component is well-structured, clear, and strongly supports the argument.
+
+For both the starting and ending tags of each component, add the evaluation of that component to the tag, e.g. if a Counterclaim is ineffective, replace the relevant <Counterclaim> with <Counterclaim,Ineffective> and the corresponding </Counterclaim> with </Counterclaim,Ineffective>; likewise if a Concluding Statement is effective, replace the relevant <Concluding Statement> with <Concluding Statement,Effective> and the corresponding </Concluding Statement> with </Concluding Statement,Ineffective>.
+
+# GUIDELINES
+- Keep the original text in the same order without adding, removing, or altering any words (other than inserting the markers).
+- Do not correct for spelling, grammar, or punctuation errors in the original text.
+- Analyze each segment fully before providing an evaluation rating.
+- The essay will be anonymized by replacing revealing details with tags starting with '@' such as '@ORGANIZATION1', '@CAPS2', and '@DATE1'.
+- Utilize the essay prompt provided below to identify the correct labels for each component.
+- Respond with the updated annotated essay with each segment containing an evaluation
