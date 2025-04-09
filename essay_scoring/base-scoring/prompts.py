@@ -59,7 +59,7 @@ The essay that requires a holistic score from the rubric is as follows:
 
 Provide a numerical domain_1_score by using the provided rubric's guidance.
 You may also provide your reasoning on the essay's strengths and weaknesses in regards to the provided rubric.
-Output the score in JSON using the following format:
+Output the score in JSON using the following format and use JSON markdown formatting to encode the output:
 {{
     "essay_set": "{essay_set}",
     "comments": "{commentary}",
