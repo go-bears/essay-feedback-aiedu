@@ -58,10 +58,10 @@ The essay that requires a holistic score from the rubric is as follows:
 {essay_text}
 
 Provide a numerical domain_1_score by using the provided rubric's guidance.
-You may also provide a reasoning commentary on the essay's strengths and weaknesses in regards to the provided rubric.
+You may also provide your reasoning on the essay's strengths and weaknesses in regards to the provided rubric.
 Output the score in JSON using the following format:
 {{
-    "essay_id": "{essay_id}",
+    "essay_set": "{essay_set}",
     "comments": "{commentary}",
     "domain_1_score": {score_1},
     "domain_2_score": None
@@ -81,7 +81,7 @@ Review the given rubrics and prompt carefully. The essay that requires a holisti
 
 Output the scores in JSON using the following format:
 {{
-    "essay_id": {essay_id},
+    "essay_set": {essay_set},
     "comments": {commentary},
     "domain_1_score": {score_1},
     "domain_2_score": {score_2}
