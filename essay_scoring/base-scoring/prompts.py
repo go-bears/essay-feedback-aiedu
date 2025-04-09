@@ -81,7 +81,6 @@ Domain 1: Writing Applications
 Domain 2: Language Conventions
 
 Review the given rubrics and prompt carefully. 
-
 The essay that requires a holistic score from the rubric is as follows:
 
 {essay_text}

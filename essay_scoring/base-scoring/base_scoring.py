@@ -1,3 +1,14 @@
+"""Python script for scoring essays using an Ollama based LLM model.
+This script loads essay data, processes it using a specified LLM model, and outputs the scoring results to a file.
+
+Note you need to have the Ollama library and model installed and running locally before using the script.
+
+For example, you can run the following command to install the Ollama library and the Llama 3.1 model:
+
+$ ollama run llama3.1
+
+"""
+
 import argparse
 import os
 import csv
@@ -11,8 +22,7 @@ from datetime import datetime
 
 from prompts import *
 
-# import essay_feedback
-# from essay_feedback.data import *
+
 BASE_DIR = "/home/kaiju/melissa_dev/ai-ed/"
 PROMPTS_PATH = os.path.join(BASE_DIR, "essay_scoring", "asap-aes", "prompts")
 RUBRICS_PATH = os.path.join(BASE_DIR, "essay_scoring", "asap-aes", "rubrics")
@@ -41,12 +51,14 @@ def cli_main():
 model, output_dir = cli_main()
 date_str = datetime.now().strftime("%Y-%m-%d-%H-%M")
 output_file = os.path.join(output_dir, model, f"{model}-scoring-output-{date_str}.tsv")
+print("now:", date_str)
 
 
 prompt_rubric_map = load_prompts_rubrics(PROMPTS_PATH, RUBRICS_PATH)
 input_file = os.path.join(BASE_DIR, "essay_argument_annotation", "processed_asap_aes_data.tsv")
 essay_data = pd.read_csv(input_file, sep="\t", encoding="latin1")
 data_out = []
+
 
 for idx, row in enumerate(tqdm(essay_data.iterrows())):
     essay_id = row[1]["essay_id"]
@@ -95,15 +107,18 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
     if idx % 50 == 0:
         print(row)
         print(response.message.content)
+        print(runtime_prompt, runtime_rubric)
+        print(date_str)
+        print("--------------------------------------------------")
         
     if idx % 1000 == 0:
         p_output_file= os.path.join(output_dir, model, f"partial_{idx}_{model}-scoring-output-{date_str}.tsv")
-        print(f"Saving intermediate results... {p_output_file}")
+        print(f"Saving intermediate results... {p_output_file}. {date_str}")
         pd.DataFrame(data_out).to_csv(p_output_file, index=False, sep="\t")
 
-
-pd.DataFrame(data_out).to_csv(os.path.join(output_dir, output_file), index=True, sep="\t")
-print("Output saved to:", output_file)
+write_out = os.path.join(output_dir, model, f"final_{model}-scoring-output-{date_str}.tsv")
+pd.DataFrame(data_out).to_csv(write_out, index=True, sep="\t")
+print("Final Output saved to:", write_out)
 
 
 if __name__ == "__main__":
@@ -116,13 +131,5 @@ if __name__ == "__main__":
     
     print("Essay data preview:")
     print(essay_data.head())
-
-
-
-
-
-
-
-
 
 
