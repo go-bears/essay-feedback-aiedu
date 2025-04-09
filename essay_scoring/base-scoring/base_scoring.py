@@ -92,8 +92,7 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
         "comments": response.message.content
     })
 
-    if idx % 100 == 0:
-        
+    if idx % 50 == 0:
         print(row)
         print(response.message.content)
         
