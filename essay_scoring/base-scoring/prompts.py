@@ -33,7 +33,7 @@ def load_prompts_rubrics(prompts_path: str, rubrics_path: str) -> dict:
 
 system_prompt = f"""
 You are a helpful essay assessement assistant that scores essays based on a rubric. Please provide a 
-numerical score for the provided essay according to the specified rubric.
+numerical score and commentary for the provided essay according to the specified rubric.
 
 Some guidelines are:
 - These essays were written by students ranging in grade levels from Grade 7 to Grade 10.
@@ -52,11 +52,13 @@ The prompt is as follows:
 
 essay_prompt = f"""
 
-Review the given rubric and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
+Review the given rubric and prompt carefully. 
+The essay that requires a holistic score from the rubric is as follows:
 
 {essay_text}
 
 Provide a numerical domain_1_score by using the provided rubric's guidance.
+You may also provide a reasoning commentary on the essay's strengths and weaknesses in regards to the provided rubric.
 Output the score in JSON using the following format:
 {{
     "essay_id": "{essay_id}",
