@@ -57,19 +57,20 @@ The essay that requires a holistic score from the rubric is as follows:
 
 {essay_text}
 
-Provide a numerical domain_1_score by using the provided rubric's guidance.
+This essay requires only numerical domain_1_score by using the provided rubric's guidance.
 You may also provide your reasoning on the essay's strengths and weaknesses in regards to the provided rubric.
 Output the score in JSON using the following format and use JSON markdown formatting to encode the output:
 {{
-    "essay_set": "{essay_set}",
-    "comments": "{commentary}",
-    "domain_1_score": {score_1},
-    "domain_2_score": None
+    'essay_set': {essay_set},
+    'comments': {commentary},
+    'domain_1_score': {score_1},
+    'domain_2_score': None
 }}
 """
 
 essay_set_2_essay_prompt = """
-This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
+This essay requires 2 numerical scores: 'domain_1_score' and 'domain_2_score'. 
+You have been provided with both rubrics in the system prompt.
 
 Please provide a numerical score for each domain based on the appropriate rubric.
 Domain 1: Writing Applications
