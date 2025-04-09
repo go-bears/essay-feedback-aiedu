@@ -55,7 +55,6 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
     essay_id = row[1]["essay_id"]
     essay_set = row[1]["essay_set"]
     essay = row[1]["essay"]
-  
 
     runtime_prompt = prompt_rubric_map[essay_set]["prompt"]
     runtime_rubric = prompt_rubric_map[essay_set]["rubric"]
@@ -87,7 +86,6 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
             score_1=None)},
         ])
 
-    print(response.message.content)
 
     data_out.append({
         "idx": idx,
@@ -97,7 +95,7 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
         "comments": response.message.content
     })
 
-    if idx % 100 == 0:
+    if idx % 500 == 0:
         print("Saving intermediate results...")
         print(row)
         print(response.message.content)
