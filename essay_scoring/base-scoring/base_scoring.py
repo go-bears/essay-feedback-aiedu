@@ -14,8 +14,8 @@ from prompts import *
 # import essay_feedback
 # from essay_feedback.data import *
 BASE_DIR = "/home/kaiju/melissa_dev/ai-ed/"
-PROMPTS_PATH = os.path.join(BASE_DIR , "essay_scoring", "asap-aes", "prompts")
-RUBRICS_PATH = os.path.join(BASE_DIR "essay_scoring", "asap-aes", "rubrics")
+PROMPTS_PATH = os.path.join(BASE_DIR, "essay_scoring", "asap-aes", "prompts")
+RUBRICS_PATH = os.path.join(BASE_DIR, "essay_scoring", "asap-aes", "rubrics")
 
 default_model = "llama3.1"
 default_output_dir = "base-scoring-outputs"
@@ -45,10 +45,7 @@ output_file = os.path.join(output_dir, model, f"{model}-scoring-output-{date_str
 
 prompt_rubric_map = load_prompts_rubrics(PROMPTS_PATH, RUBRICS_PATH)
 input_file = os.path.join(BASE_DIR, "essay_argument_annotation", "processed_asap_aes_data.tsv")
-essay_data = pd.read_csv(os.path.join(input_file,
-                                      sep="\t", 
-                                      encoding="latin1")
-
+essay_data = pd.read_csv(input_file, sep="\t", encoding="latin1")
 data_out = []
 
 for idx, row in enumerate(tqdm(essay_data.iterrows())):
@@ -68,7 +65,7 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
             },
             {"role": "user", 
             "content": essay_set_2_essay_prompt.format(essay_text=essay,
-            essay_id=essay_id,
+            essay_set=essay_set,
             commentary=None,
             score_1=None,
             score_2=None)}
@@ -81,7 +78,7 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
                 prompt=runtime_prompt)},
             {"role": "user", 
             "content": essay_prompt.format(essay_text=essay,
-            essay_id=essay_id, 
+            essay_set=essay_set, 
             commentary=None, 
             score_1=None)},
         ])
@@ -95,14 +92,16 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
         "comments": response.message.content
     })
 
-    if idx % 500 == 0:
-        print("Saving intermediate results...")
+    if idx % 100 == 0:
+        
         print(row)
         print(response.message.content)
+        p_output_file= os.path.join(output_dir, f"partial_{idx}_{model}-scoring-output-{date_str}.tsv")
+        print(f"Saving intermediate results... {p_output_file}")
+        pd.DataFrame(data_out).to_csv(p_output_file, index=False, sep="\t")
 
-        pd.DataFrame(data_out).to_csv(output_file, index=False, sep="\t")
 
-pd.DataFrame(data_out).to_csv(output_file, index=True, sep="\t")
+pd.DataFrame(data_out).to_csv(os.path.join(output_dir, output_file), index=True, sep="\t")
 print("Output saved to:", output_file)
 
 
