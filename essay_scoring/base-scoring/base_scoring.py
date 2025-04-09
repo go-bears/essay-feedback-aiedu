@@ -96,7 +96,7 @@ for idx, row in enumerate(tqdm(essay_data.iterrows())):
         
         print(row)
         print(response.message.content)
-        p_output_file= os.path.join(output_dir, f"partial_{idx}_{model}-scoring-output-{date_str}.tsv")
+        p_output_file= os.path.join(output_dir, model, f"partial_{idx}_{model}-scoring-output-{date_str}.tsv")
         print(f"Saving intermediate results... {p_output_file}")
         pd.DataFrame(data_out).to_csv(p_output_file, index=False, sep="\t")
 
