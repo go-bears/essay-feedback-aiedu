@@ -15,7 +15,7 @@ LLAMA_CPP_RELEASE = "b4568"
 MINUTES = 60
 
 cuda_version = "12.4.0"  # should be no greater than host CUDA version
-flavor = "devel"  #  includes full CUDA toolkit
+flavor = "devel"  # includes full CUDA toolkit
 operating_sys = "ubuntu22.04"
 tag = f"{cuda_version}-{flavor}-{operating_sys}"
 
@@ -75,6 +75,7 @@ VOLUME_CONFIG: dict[Union[str, PurePosixPath], modal.Volume] = {
     "/pretrained": pretrained_volume,
     "/runs": runs_volume,
 }
+
 
 
 
