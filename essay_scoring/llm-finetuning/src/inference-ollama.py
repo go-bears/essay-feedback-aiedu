@@ -9,7 +9,7 @@ import modal
 
 from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
 
-INFERENCE_GPU_CONFIG = "A10G:2"
+INFERENCE_GPU_CONFIG = "A100:1"
 import re
 import json
 
@@ -21,15 +21,22 @@ def compute_kappa_summary(truth_dict, pred_dict) -> dict:
     results: dict[str, float] = dict()
     avg_qwk = 0
     for essay_set in truth_dict:
-        qwk = cohen_kappa_score(truth_dict[essay_set], pred_dict[essay_set], weights="quadratic")
-        results[str(essay_set)] = qwk
-        avg_qwk += qwk
+        if essay_set == 2:
+            qwk_1 = cohen_kappa_score(truth_dict[essay_set][0], pred_dict[essay_set][0], weights="quadratic")
+            qwk_2 = cohen_kappa_score(truth_dict[essay_set][1], pred_dict[essay_set][1], weights="quadratic")
+            results[str(essay_set)]["domain_1"] = qwk_1
+            results[str(essay_set)]["domain_2"] = qwk_2
+            avg_qwk += ((qwk_1 + qwk_2) / 2)
+        else:
+            qwk = cohen_kappa_score(truth_dict[essay_set][0], pred_dict[essay_set][0], weights="quadratic")
+            results[str(essay_set)] = qwk
+            avg_qwk += qwk
     avg_qwk /= N_CLASSES
     results["avg"] = avg_qwk
     return results
 
 
-def extract_domain_score(text: str, domain: int) -> Optional[str]:
+def extract_domain_score(text: str, domain: int) -> Optional[float]:
     # Step 1: Find JSON objects in the string
     # This pattern looks for text that starts with { and ends with }
     json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
@@ -47,12 +54,12 @@ def extract_domain_score(text: str, domain: int) -> Optional[str]:
 
             # Check if our key exists directly
             if f"domain_{domain}_score" in json_obj:
-                return str(json_obj[f"domain_{domain}_score"])
+                return float(json_obj[f"domain_{domain}_score"])
 
             # Alternative: use regex to extract the value
             match = re.search(domain_score_pattern, potential_json)
             if match:
-                return str(match.group(1))
+                return float(match.group(1))
         except json.JSONDecodeError:
             # Not valid JSON, continue to next match
             continue
@@ -64,13 +71,12 @@ system_prompt = """
 You are a helpful essay assessement assistant that scores essays based on a rubric. Please provide a 
 numerical score for the provided essay according to the specified rubric.
 
-Some guidelines are:
 - These essays were written by students ranging in grade levels from Grade 7 to Grade 10 (ages 11-16).
 - Provide an appropriate holistic score for limited timed test conditions where there is litte to no time for revision
-- The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. 
-- If information has been anonymized, do not penalize the essay if organization, coherence, clarity, specificity, and style are affected.
-- You may make a reasonable substitution or interpolation for the anonymized information to preserve minimal coherence and readability, 
-  but do not change or edit the original essay with the substitution.
+- The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
+- You will carefully read the rubric and prompt, as many times as needed.
+- Every essay you grade following the instructions properly and aligned with human grading will be rewarded with +1 gold bars.
+- When you fail to grade like a human would, you lose -2 gold bars.
 
 The rubric or rubrics for this essay is as follows:
 {rubric}
@@ -89,6 +95,7 @@ Provide a numerical domain_1_score by using the provided rubric's guidance.
 Output the score in JSON using the following format:
 {{
     "domain_1_score": {{essay_score}},
+    "gold_bars": {{gold_bars}}
 }}
 """
 
@@ -106,7 +113,8 @@ Review the given rubrics and prompt carefully. The essay that requires a holisti
 Output the scores in JSON using the following format:
 {{
     "domain_1_score": {{domain_score_1}},
-    "domain_2_score": {{domain_score_2}}
+    "domain_2_score": {{domain_score_2}},
+    "gold_bars": {{gold_bars}}
 }}
 """
 
@@ -271,8 +279,8 @@ def inference_job(model_handle: str, ):
 
     LIMIT = 20
     N = min(len(eval_dataset), LIMIT)
-    results: dict[int, list[str]] = dict()
-    ground_truths: dict[int, list[str]] = dict()
+    results: dict[int, list[tuple[float, float]]] = {}
+    ground_truths: dict[int, list[tuple[float, float]]] = {}
     times = np.empty((N + 1, 1), dtype=np.float32)
     for idx, grading_instruction in enumerate(eval_dataset):
         logging.debug("*" * 120)
@@ -301,20 +309,30 @@ def inference_job(model_handle: str, ):
         logging.debug("=" * 80)
         logging.debug("Answer:")
         score_1 = extract_domain_score(response.message.content, 1)
+        score_2 = -1
         logging.debug(score_1)
 
-        score = score_1
         if essay_set == 2:
             score_2 = extract_domain_score(response.message.content, 2)
             logging.debug(score_2)
-            score = f"{score_1} {score_2}"
+        score = (score_1, score_2)
+
+        grader_score_1 = -1
+        grader_score_2 = -1
+        if essay_set == 2:
+            split = grading_instruction["grader_score"].split(" ")
+            grader_score_1 = float(split[0])
+            grader_score_2 = float(split[1])
+        else:
+            grader_score_1 = float(grading_instruction["grader_score"])
+        grader_score = (grader_score_1, grader_score_2)
 
         if essay_set not in results:
             results[essay_set] = [score]
-            ground_truths[essay_set] = [str(grading_instruction["grader_score"])]
+            ground_truths[essay_set] = [grader_score]
         else:
             results[essay_set].append(score)
-            ground_truths[essay_set].append(str(grading_instruction["grader_score"]))
+            ground_truths[essay_set].append(grader_score)
 
         times[idx] = response.total_duration
         logging.debug("*" * 120)
