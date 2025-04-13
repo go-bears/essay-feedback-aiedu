@@ -75,7 +75,9 @@ Please provide a numerical score for the provided essay according to the specifi
 - Provide an appropriate holistic score for limited timed test conditions where there is litte to no time for revision
 - The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
 - You will carefully read the rubric and prompt, as many times as needed.
-- You will provide an explanation to your decisions in the {{explanation}} field as to why you chose this score following the rubric and guidelines.
+- You will provide a detailed explanation to your decisions as to why you chose this score following the rubric and guidelines.
+- You will also make sure to be fair knowing your students are still in school.
+- Your format has to 
 
 The rubric or rubrics for this essay is as follows:
 {rubric}
@@ -93,8 +95,7 @@ Review the given rubric and prompt carefully. The essay that requires a holistic
 Provide a numerical domain_1_score by using the provided rubric's guidance.
 Output the score in JSON using the following format:
 {{
-    "domain_1_score": {{essay_score}},
-    "explanation": {{explanation}}
+    "domain_1_score": {{essay_score}}
 }}
 """
 
@@ -112,8 +113,7 @@ Review the given rubrics and prompt carefully. The essay that requires a holisti
 Output the scores in JSON using the following format:
 {{
     "domain_1_score": {{domain_score_1}},
-    "domain_2_score": {{domain_score_2}},
-    "explanation": {{explanation}}
+    "domain_2_score": {{domain_score_2}}
 }}
 """
 
@@ -122,6 +122,8 @@ def init_ollama():
     import httpx
     import subprocess
     import time
+    import os
+    # os.environ["OLLAMA_MODELS"] = "/pretrained/ollama"
     subprocess.run(["systemctl", "daemon-reload"])
     subprocess.run(["systemctl", "enable", "ollama"])
     subprocess.run(["systemctl", "start", "ollama"])
@@ -155,7 +157,7 @@ ollama_image = (
         "curl -L https://ollama.com/download/ollama-linux-amd64.tgz -o ollama-linux-amd64.tgz",
         "tar -C /usr -xzf ollama-linux-amd64.tgz",
         "useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama",
-        "usermod -a -G ollama $(whoami)",
+        "usermod -a -G ollama $(whoami)"
     )
     .env({
         "HF_HUB_ENABLE_HF_TRANSFER": "1",
@@ -217,8 +219,7 @@ def inference_job(model_handle: str, ):
     EXPORT_PATH = os.path.join(run_folder, "results.csv")
 
     VOLUME_CONFIG["/pretrained"].reload()
-    os.environ["OLLAMA_MODELS"] = os.path.join("pretrained", "ollama")
-    subprocess.run(["ollama", "pull", "gemma3:12b"], stdout=subprocess.PIPE)
+    subprocess.run(["ollama", "pull", "deepseek-r1:8b"], stdout=subprocess.PIPE)
     VOLUME_CONFIG["/pretrained"].commit()
 
     #     modelfile_content = """
@@ -281,6 +282,10 @@ def inference_job(model_handle: str, ):
     results: dict[int, list[tuple[float, float]]] = {}
     ground_truths: dict[int, list[tuple[float, float]]] = {}
     times = np.empty((N + 1, 1), dtype=np.float32)
+
+    VOLUME_CONFIG["/runs"].reload()
+    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+
     for idx, grading_instruction in enumerate(eval_dataset):
         logging.debug("*" * 120)
         logging.debug("Processing essay", idx)
@@ -291,7 +296,7 @@ def inference_job(model_handle: str, ):
         essay_set = int(grading_instruction["essay_set"])
 
         response = ollama.chat(
-            model="gemma3:12b",
+            model="deepseek-r1:8b",
             messages=[
                 {
                     "role": "system",
@@ -307,6 +312,8 @@ def inference_job(model_handle: str, ):
             ], options={
                 "num_ctx": 10000
             })
+        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + response.message.content + "\n\n"
+        raw_outputs.write(out_str)
         logging.debug("=" * 80)
         logging.debug("Answer:")
         score_1 = extract_domain_score(response.message.content, 1)
@@ -341,7 +348,7 @@ def inference_job(model_handle: str, ):
             break
 
     # qwk =
-    VOLUME_CONFIG["/runs"].reload()
+
     # Store data in a traceable format
     output = {
         "system_prompt": system_prompt,
@@ -353,9 +360,9 @@ def inference_job(model_handle: str, ):
         "avg_time_ms": float(np.average(times) / (10 ** 6)),
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
-    # outfile.write("\n".join(output))
     json.dump(output, outfile)
     outfile.close()
+    raw_outputs.close()
 
     # pd.DataFrame(results).to_csv(EXPORT_PATH, sep="\t")
     VOLUME_CONFIG["/runs"].commit()
