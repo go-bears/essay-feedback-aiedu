@@ -68,15 +68,14 @@ def extract_domain_score(text: str, domain: int) -> Optional[float]:
 
 
 system_prompt = """
-You are a helpful essay assessement assistant that scores essays based on a rubric. Please provide a 
-numerical score for the provided essay according to the specified rubric.
+You are an expert middle school teacher (ages 11-16) who scores essays based on a rubric. 
+Please provide a numerical score for the provided essay according to the specified rubric.
 
 - These essays were written by students ranging in grade levels from Grade 7 to Grade 10 (ages 11-16).
 - Provide an appropriate holistic score for limited timed test conditions where there is litte to no time for revision
 - The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
 - You will carefully read the rubric and prompt, as many times as needed.
-- Every essay you grade following the instructions properly and aligned with human grading will be rewarded with +1 gold bars.
-- When you fail to grade like a human would, you lose -2 gold bars.
+- You will provide an explanation to your decisions in the {{explanation}} field as to why you chose this score following the rubric and guidelines.
 
 The rubric or rubrics for this essay is as follows:
 {rubric}
@@ -95,7 +94,7 @@ Provide a numerical domain_1_score by using the provided rubric's guidance.
 Output the score in JSON using the following format:
 {{
     "domain_1_score": {{essay_score}},
-    "gold_bars": {{gold_bars}}
+    "explanation": {{explanation}}
 }}
 """
 
@@ -114,7 +113,7 @@ Output the scores in JSON using the following format:
 {{
     "domain_1_score": {{domain_score_1}},
     "domain_2_score": {{domain_score_2}},
-    "gold_bars": {{gold_bars}}
+    "explanation": {{explanation}}
 }}
 """
 
@@ -305,7 +304,9 @@ def inference_job(model_handle: str, ):
                         essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
                         essay_text=grading_instruction["essay_text"])
                 }
-            ])
+            ], options={
+                "num_ctx": 10000
+            })
         logging.debug("=" * 80)
         logging.debug("Answer:")
         score_1 = extract_domain_score(response.message.content, 1)
