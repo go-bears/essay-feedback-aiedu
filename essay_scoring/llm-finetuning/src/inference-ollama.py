@@ -4,31 +4,40 @@ import os
 import re
 import secrets
 from typing import Optional
+from collections import defaultdict
 
 import modal
 
 from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
-
-INFERENCE_GPU_CONFIG = "A100:1"
 import re
 import json
+import numpy as np
+
+INFERENCE_GPU_CONFIG = "A100:1"
 
 N_CLASSES = 6
+LIMIT = np.inf
+ASAPResults = dict[int, list[tuple[float, float]]]
 
 
-def compute_kappa_summary(truth_dict, pred_dict) -> dict:
+def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
     from sklearn.metrics import cohen_kappa_score
-    results: dict[str, float] = dict()
+    results: dict[str, float | tuple[float, float]] = dict()
     avg_qwk = 0
     for essay_set in truth_dict:
         if essay_set == 2:
-            qwk_1 = cohen_kappa_score(truth_dict[essay_set][0], pred_dict[essay_set][0], weights="quadratic")
-            qwk_2 = cohen_kappa_score(truth_dict[essay_set][1], pred_dict[essay_set][1], weights="quadratic")
-            results[str(essay_set)]["domain_1"] = qwk_1
-            results[str(essay_set)]["domain_2"] = qwk_2
+            truth_1 = [tup[0] for tup in truth_dict[essay_set]]
+            pred_1 = [tup[0] for tup in pred_dict[essay_set]]
+            truth_2 = [tup[1] for tup in truth_dict[essay_set]]
+            pred_2 = [tup[1] for tup in pred_dict[essay_set]]
+            qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
+            qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
+            results[str(essay_set)] = (qwk_1, qwk_2)
             avg_qwk += ((qwk_1 + qwk_2) / 2)
         else:
-            qwk = cohen_kappa_score(truth_dict[essay_set][0], pred_dict[essay_set][0], weights="quadratic")
+            truth_1 = [tup[0] for tup in truth_dict[essay_set]]
+            pred_1 = [tup[0] for tup in pred_dict[essay_set]]
+            qwk = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
             results[str(essay_set)] = qwk
             avg_qwk += qwk
     avg_qwk /= N_CLASSES
@@ -60,8 +69,9 @@ def extract_domain_score(text: str, domain: int) -> Optional[float]:
             match = re.search(domain_score_pattern, potential_json)
             if match:
                 return float(match.group(1))
-        except json.JSONDecodeError:
+        except Exception as e:
             # Not valid JSON, continue to next match
+            logging.error(e)
             continue
 
     return None
@@ -77,7 +87,6 @@ Please provide a numerical score for the provided essay according to the specifi
 - You will carefully read the rubric and prompt, as many times as needed.
 - You will provide a detailed explanation to your decisions as to why you chose this score following the rubric and guidelines.
 - You will also make sure to be fair knowing your students are still in school.
-- Your format has to 
 
 The rubric or rubrics for this essay is as follows:
 {rubric}
@@ -106,7 +115,9 @@ Please provide a numerical score for each domain based on the appropriate rubric
 Domain 1: Writing Applications
 Domain 2: Language Conventions
 
-Review the given rubrics and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
+- Be sure to Review the given rubrics and prompt carefully, reasoning through your decision for each domain.
+
+The essay that requires two scores from the rubric is as follows:
 
 {essay_text}
 
@@ -196,8 +207,8 @@ inference_app = modal.App(
 #     return inference_handle
 
 
-@inference_app.function(image=ollama_image, timeout=15 * MINUTES, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
-def inference_job(model_handle: str, ):
+@inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
+def inference_job(ollama_handle: str, ):
     import ollama
     from datasets import load_dataset
     from unsloth import FastLanguageModel
@@ -206,9 +217,11 @@ def inference_job(model_handle: str, ):
     from datetime import datetime
     import numpy as np
 
+    # logging.basicConfig(level=logging.DEBUG)
+
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = (
-        f"ollama-{model_handle}-{time_string}-{secrets.token_hex(2)}"
+        f"ollama-{ollama_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
     )
     run_folder = f"/runs/{run_name}"
     os.makedirs(run_folder, exist_ok=True)
@@ -216,10 +229,10 @@ def inference_job(model_handle: str, ):
 
     init_ollama()
 
-    EXPORT_PATH = os.path.join(run_folder, "results.csv")
+    # EXPORT_PATH = os.path.join(run_folder, "results.csv")
 
     VOLUME_CONFIG["/pretrained"].reload()
-    subprocess.run(["ollama", "pull", "deepseek-r1:8b"], stdout=subprocess.PIPE)
+    subprocess.run(["ollama", "pull", ollama_handle], stdout=subprocess.PIPE)
     VOLUME_CONFIG["/pretrained"].commit()
 
     #     modelfile_content = """
@@ -245,16 +258,16 @@ def inference_job(model_handle: str, ):
     #
     #     subprocess.run(["ollama", "create", "llama31-ft-asap", "-f", "Modelfile"], stdout=subprocess.PIPE)
 
-    alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-        ### Instruction:
-        {}
-
-        ### Input:
-        {}
-
-        ### Response:
-        {}"""
+    # alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+    #
+    #     ### Instruction:
+    #     {}
+    #
+    #     ### Input:
+    #     {}
+    #
+    #     ### Response:
+    #     {}"""
     # model, tokenizer = FastLanguageModel.from_pretrained(
     #     model_name=model_handle,
     #     max_seq_length=16384,
@@ -274,32 +287,34 @@ def inference_job(model_handle: str, ):
     #     text = alpaca_prompt.format(instruction, input, output)
     #     return {"text": text, }
 
-    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation[560:]")
     # eval_dataset = eval_dataset.map(formatting_prompts_func)
 
-    LIMIT = 20
-    N = min(len(eval_dataset), LIMIT)
-    results: dict[int, list[tuple[float, float]]] = {}
-    ground_truths: dict[int, list[tuple[float, float]]] = {}
-    times = np.empty((N + 1, 1), dtype=np.float32)
+    n = min(len(eval_dataset), LIMIT)
+
+    results: ASAPResults = {}
+    ground_truths: ASAPResults = {}
+    times = np.empty((n + 1, 1), dtype=np.float32)
 
     VOLUME_CONFIG["/runs"].reload()
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+    tmp_outs = open(os.path.join(run_folder, "tmp.json"), "w")
+    none_count = 0
 
     for idx, grading_instruction in enumerate(eval_dataset):
-        logging.debug("*" * 120)
-        logging.debug("Processing essay", idx)
-        logging.debug("=" * 80)
-        logging.debug("Prompt:")
-        logging.debug(grading_instruction)
+        logging.info("*" * 120)
+        logging.info("Processing essay", idx)
+        logging.info("=" * 80)
+        logging.info("Prompt:")
+        logging.info(grading_instruction)
 
         essay_set = int(grading_instruction["essay_set"])
 
         response = ollama.chat(
-            model="deepseek-r1:8b",
+            model=ollama_handle,
             messages=[
                 {
-                    "role": "system",
+                    "role": "user",
                     "content": system_prompt.format(rubric=grading_instruction["rubric"],
                                                     prompt=grading_instruction["essay_prompt"])
                 },
@@ -310,20 +325,32 @@ def inference_job(model_handle: str, ):
                         essay_text=grading_instruction["essay_text"])
                 }
             ], options={
-                "num_ctx": 10000
+                "num_ctx": 2 ** 15
             })
+        times[idx] = response.total_duration
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + response.message.content + "\n\n"
         raw_outputs.write(out_str)
-        logging.debug("=" * 80)
-        logging.debug("Answer:")
-        score_1 = extract_domain_score(response.message.content, 1)
-        score_2 = -1
-        logging.debug(score_1)
+        logging.info("=" * 80)
+        logging.info("Answer:")
 
-        if essay_set == 2:
-            score_2 = extract_domain_score(response.message.content, 2)
-            logging.debug(score_2)
-        score = (score_1, score_2)
+        try:
+            score_1 = extract_domain_score(response.message.content, 1)
+            score_2 = -1
+            logging.info(score_1)
+
+            if essay_set == 2:
+                score_2 = extract_domain_score(response.message.content, 2)
+                logging.info(score_2)
+            score = (score_1, score_2)
+        except Exception as e:
+            # skip this essay
+            logging.error(e)
+            continue
+
+        # Discard from analysis
+        if score_1 is None or score_2 is None:
+            none_count += 1
+            continue
 
         grader_score_1 = -1
         grader_score_2 = -1
@@ -342,9 +369,25 @@ def inference_job(model_handle: str, ):
             results[essay_set].append(score)
             ground_truths[essay_set].append(grader_score)
 
-        times[idx] = response.total_duration
-        logging.debug("*" * 120)
-        if idx == N:
+        logging.info("*" * 120)
+
+        # Periodic writes
+        if idx % 100 == 0:
+            output = {
+                "system_prompt": system_prompt,
+                "essay_prompt": essay_prompt,
+                "essay_prompt_set_2": essay_set_2_essay_prompt,
+                "qwk_summary": compute_kappa_summary(ground_truths, results),
+                "predicted_labels": results,
+                "ground_truths": ground_truths,
+                "avg_time_ms": float(np.average(times) / (10 ** 6)),
+                "sample_size": idx,
+                "none_count": none_count
+            }
+            json.dump(output, tmp_outs)
+            VOLUME_CONFIG["/runs"].commit()
+
+        if idx == n:
             break
 
     # qwk =
@@ -358,11 +401,14 @@ def inference_job(model_handle: str, ):
         "predicted_labels": results,
         "ground_truths": ground_truths,
         "avg_time_ms": float(np.average(times) / (10 ** 6)),
+        "sample_size": n,
+        "none_count": none_count
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
     json.dump(output, outfile)
     outfile.close()
     raw_outputs.close()
+    tmp_outs.close()
 
     # pd.DataFrame(results).to_csv(EXPORT_PATH, sep="\t")
     VOLUME_CONFIG["/runs"].commit()
