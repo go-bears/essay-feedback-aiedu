@@ -12,12 +12,12 @@ date_str = datetime.datetime.now().strftime("%Y-%m-%d-%H-%M")
 output_dir = "/home/kaiju/melissa_dev/ai-ed/base-scoring-outputs/evals"
 os.makedirs(output_dir, exist_ok=True)
 
-result_file = "/home/kaiju/melissa_dev/ai-ed/base-scoring-outputs/llama3.1/llama3.1-scoring-output-2025-04-06-23-24.tsv"
+result_file = "/home/kaiju/melissa_dev/ai-ed/base-scoring-outputs/llama3.2/partial_1000_llama3.2-scoring-output-2025-04-09-12-19.tsv"
 eval_file = "/home/kaiju/melissa_dev/ai-ed/essay_argument_annotation/processed_asap_aes_data.tsv"
 
 def open_file(result_file, eval_file):
     result_df = pd.read_csv(result_file, sep="\t", encoding="latin1")
-    eval_df = pd.read_csv(eval_file, sep="\t", encoding="latin1")
+    eval_df = pd.read_csv(eval_file, sep="\t", encoding="latin1")[:1001]
 
     return result_df, eval_df
 
