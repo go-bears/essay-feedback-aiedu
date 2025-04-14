@@ -12,8 +12,10 @@ from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
 import re
 import json
 import numpy as np
+import pandas as pd
 
 INFERENCE_GPU_CONFIG = "A100:1"
+
 
 N_CLASSES = 6
 # LIMIT = np.inf
@@ -80,7 +82,6 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
             continue
 
     return None
-
 
 system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
@@ -230,7 +231,6 @@ def inference_job(ollama_handle: str, ):
     import numpy as np
 
     # logging.basicConfig(level=logging.DEBUG)
-
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = (
         f"ollama-{ollama_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
@@ -238,11 +238,9 @@ def inference_job(ollama_handle: str, ):
     run_folder = f"/runs/{run_name}"
     os.makedirs(run_folder, exist_ok=True)
     print(f"Prepared training run in {run_folder}.")
-
     init_ollama()
 
     # EXPORT_PATH = os.path.join(run_folder, "results.csv")
-
     VOLUME_CONFIG["/pretrained"].reload()
     subprocess.run(["ollama", "pull", ollama_handle], stdout=subprocess.PIPE)
     VOLUME_CONFIG["/pretrained"].commit()
@@ -299,19 +297,17 @@ def inference_job(ollama_handle: str, ):
     #     text = alpaca_prompt.format(instruction, input, output)
     #     return {"text": text, }
 
-    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation[560:]")
-    # eval_dataset = eval_dataset.map(formatting_prompts_func)
 
-    n = min(len(eval_dataset), LIMIT)
 
     results: ASAPResults = {}
     ground_truths: ASAPResults = {}
-    times = np.empty((n + 1, 1), dtype=np.float32)
-
-    VOLUME_CONFIG["/runs"].reload()
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
     tmp_outs = open(os.path.join(run_folder, "tmp.json"), "w")
     none_count = 0
+
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
+    n = min(len(eval_dataset), LIMIT)
+    times = np.empty((n + 1, 1), dtype=np.float32)
 
     for idx, grading_instruction in enumerate(eval_dataset):
         logging.info("*" * 120)
@@ -329,16 +325,16 @@ def inference_job(ollama_handle: str, ):
             essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
             essay_text=grading_instruction["essay_text"])
 
-        response = ollama.chat(
-            model=ollama_handle,
-            messages=[
-                {
-                    "role": "user",
-                    "content": system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
-                }
-            ], options={
-                "num_ctx": 2 ** 15
-            })
+        # response = ollama.chat(
+        #     model=ollama_handle,
+        #     messages=[
+        #         {
+        #             "role": "user",
+        #             "content": system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
+        #         }
+        #     ], options={
+        #         "num_ctx": 2 ** 15
+        #     })
 
         times[idx] = response.total_duration
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + response.message.content + "\n\n"
@@ -402,8 +398,6 @@ def inference_job(ollama_handle: str, ):
 
         if idx == n:
             break
-
-    # qwk =
 
     # Store data in a traceable format
     output = {

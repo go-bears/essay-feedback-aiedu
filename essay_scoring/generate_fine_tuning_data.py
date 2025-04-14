@@ -3,20 +3,18 @@ import json
 import math
 import os
 
-import chevron
+# import chevron
 import pandas as pd
 
 # Define the folder where your mustache templates are stored.
-TEMPLATE_FOLDER = "templates"
+# TEMPLATE_FOLDER = "templates"
 
 
-
-
-def _get_templated(name: str, **kwargs) -> str:
-    """Helper function that renders a mustache template from TEMPLATE_FOLDER."""
-    template_path = os.path.join(TEMPLATE_FOLDER, f"{name}.mustache")
-    with open(template_path, "r") as f:
-        return chevron.render(f, data=kwargs)
+# def _get_templated(name: str, **kwargs) -> str:
+#     """Helper function that renders a mustache template from TEMPLATE_FOLDER."""
+#     template_path = os.path.join(TEMPLATE_FOLDER, f"{name}.mustache")
+#     with open(template_path, "r") as f:
+#         return chevron.render(f, data=kwargs)
 
 
 def main(args):
@@ -35,7 +33,7 @@ def main(args):
     val_df = df[df['essay_id'].isin(val_ids_df['essay_id'])]
 
     # Render the system prompt once from annotate.system.mustache
-    system_prompt = _get_templated("annotate.system")
+    # system_prompt = _get_templated("annotate.system")
 
     for split, current_outfile, current_df in zip(["train", "validation"],
                                                   [args.output_train_jsonl, args.output_val_jsonl], [train_df, val_df]):
@@ -45,6 +43,7 @@ def main(args):
             for idx, row in current_df.iterrows():
                 essay_set = row['essay_set']
                 essay_text = row['essay']
+                essay_id = row['essay_id']
                 domain1_score = int(row["domain1_score"])
                 # Process essay set 1 by halving due to rubric mismatch
                 if essay_set == 1:
@@ -68,14 +67,15 @@ def main(args):
                 else:
                     output_format = args.output_format_default
 
-                # Render the message template using annotate.message.mustache
-                rendered_message = _get_templated(
-                    "annotate.message",
-                    prompt_information=prompt_information,
-                    essay=essay_text,
-                    rubric=rubric,
-                    output_format=output_format
-                )
+                # # Render the message template using annotate.message.mustache
+                # rendered_message = _get_templated(
+                #     "annotate.message",
+                #     essay_id=int(essay_id),
+                #     prompt_information=prompt_information,
+                #     essay=essay_text,
+                #     rubric=rubric,
+                #     output_format=output_format
+                # )
 
                 # Build the JSON object for this essay.
                 # data = {
@@ -84,6 +84,7 @@ def main(args):
                 #     "output" : f"{domain1_score}" if essay_set != 2 else f"{domain1_score} {domain2_score}"
                 # }
                 data = {
+                    "essay_id": essay_id,
                     "essay_prompt": prompt_information,
                     "essay_text": essay_text,
                     "rubric": rubric,
