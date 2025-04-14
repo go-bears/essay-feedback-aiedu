@@ -16,8 +16,9 @@ import numpy as np
 INFERENCE_GPU_CONFIG = "A100:1"
 
 N_CLASSES = 6
-LIMIT = np.inf
-ASAPResults = dict[int, list[tuple[float, float]]]
+# LIMIT = np.inf
+LIMIT = 20
+ASAPResults = dict[int, list[tuple[int, int]]]
 
 
 def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
@@ -25,27 +26,31 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     results: dict[str, float | tuple[float, float]] = dict()
     avg_qwk = 0
     for essay_set in truth_dict:
-        if essay_set == 2:
-            truth_1 = [tup[0] for tup in truth_dict[essay_set]]
-            pred_1 = [tup[0] for tup in pred_dict[essay_set]]
-            truth_2 = [tup[1] for tup in truth_dict[essay_set]]
-            pred_2 = [tup[1] for tup in pred_dict[essay_set]]
-            qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
-            qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
-            results[str(essay_set)] = (qwk_1, qwk_2)
-            avg_qwk += ((qwk_1 + qwk_2) / 2)
-        else:
-            truth_1 = [tup[0] for tup in truth_dict[essay_set]]
-            pred_1 = [tup[0] for tup in pred_dict[essay_set]]
-            qwk = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
-            results[str(essay_set)] = qwk
-            avg_qwk += qwk
+        try:
+            if essay_set == 2:
+                truth_1 = [tup[0] for tup in truth_dict[essay_set]]
+                pred_1 = [tup[0] for tup in pred_dict[essay_set]]
+                truth_2 = [tup[1] for tup in truth_dict[essay_set]]
+                pred_2 = [tup[1] for tup in pred_dict[essay_set]]
+                qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
+                qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
+                results[str(essay_set)] = (qwk_1, qwk_2)
+                avg_qwk += ((qwk_1 + qwk_2) / 2)
+            else:
+                truth_1 = [tup[0] for tup in truth_dict[essay_set]]
+                pred_1 = [tup[0] for tup in pred_dict[essay_set]]
+                qwk = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
+                results[str(essay_set)] = qwk
+                avg_qwk += qwk
+        except Exception as e:
+            logging.error("Error computing Kappa")
+            logging.error(e)
     avg_qwk /= N_CLASSES
     results["avg"] = avg_qwk
     return results
 
 
-def extract_domain_score(text: str, domain: int) -> Optional[float]:
+def extract_domain_score(text: str, domain: int) -> Optional[int]:
     # Step 1: Find JSON objects in the string
     # This pattern looks for text that starts with { and ends with }
     json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
@@ -63,12 +68,12 @@ def extract_domain_score(text: str, domain: int) -> Optional[float]:
 
             # Check if our key exists directly
             if f"domain_{domain}_score" in json_obj:
-                return float(json_obj[f"domain_{domain}_score"])
+                return int(json_obj[f"domain_{domain}_score"])
 
             # Alternative: use regex to extract the value
             match = re.search(domain_score_pattern, potential_json)
             if match:
-                return float(match.group(1))
+                return int(match.group(1))
         except Exception as e:
             # Not valid JSON, continue to next match
             logging.error(e)
@@ -78,28 +83,33 @@ def extract_domain_score(text: str, domain: int) -> Optional[float]:
 
 
 system_prompt = """
-You are an expert middle school teacher (ages 11-16) who scores essays based on a rubric. 
+You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
 Please provide a numerical score for the provided essay according to the specified rubric.
 
-- These essays were written by students ranging in grade levels from Grade 7 to Grade 10 (ages 11-16).
-- Provide an appropriate holistic score for limited timed test conditions where there is litte to no time for revision
 - The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
-- You will carefully read the rubric and prompt, as many times as needed.
+- Provide an appropriate holistic score for limited timed test conditions where there is little to no time for revision.
+- You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will provide a detailed explanation to your decisions as to why you chose this score following the rubric and guidelines.
-- You will also make sure to be fair knowing your students are still in school.
+- Essay length matters. A good essay is generally comprised of at least 5 well-developed sentences.
 
 The rubric or rubrics for this essay is as follows:
+<rubric>
 {rubric}
+</rubric>
 
 The prompt is as follows:
+<essay_prompt>
 {prompt}
+</essay_prompt>
 """
 
 essay_prompt = """
 
 Review the given rubric and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
 
+<student_essay>
 {essay_text}
+</student_essay>
 
 Provide a numerical domain_1_score by using the provided rubric's guidance.
 Output the score in JSON using the following format:
@@ -119,7 +129,9 @@ Domain 2: Language Conventions
 
 The essay that requires two scores from the rubric is as follows:
 
+<student_essay>
 {essay_text}
+</student_essay>
 
 Output the scores in JSON using the following format:
 {{
@@ -310,23 +322,24 @@ def inference_job(ollama_handle: str, ):
 
         essay_set = int(grading_instruction["essay_set"])
 
+        system_prompt_formatted = system_prompt.format(rubric=grading_instruction["rubric"],
+                                                       prompt=grading_instruction["essay_prompt"])
+
+        essay_set_prompt_formatted = essay_set_2_essay_prompt.format(
+            essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
+            essay_text=grading_instruction["essay_text"])
+
         response = ollama.chat(
             model=ollama_handle,
             messages=[
                 {
                     "role": "user",
-                    "content": system_prompt.format(rubric=grading_instruction["rubric"],
-                                                    prompt=grading_instruction["essay_prompt"])
-                },
-                {
-                    "role": "user",
-                    "content": essay_set_2_essay_prompt.format(
-                        essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
-                        essay_text=grading_instruction["essay_text"])
+                    "content": system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
                 }
             ], options={
                 "num_ctx": 2 ** 15
             })
+
         times[idx] = response.total_duration
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + response.message.content + "\n\n"
         raw_outputs.write(out_str)
@@ -356,10 +369,10 @@ def inference_job(ollama_handle: str, ):
         grader_score_2 = -1
         if essay_set == 2:
             split = grading_instruction["grader_score"].split(" ")
-            grader_score_1 = float(split[0])
-            grader_score_2 = float(split[1])
+            grader_score_1 = int(split[0])
+            grader_score_2 = int(split[1])
         else:
-            grader_score_1 = float(grading_instruction["grader_score"])
+            grader_score_1 = int(grading_instruction["grader_score"])
         grader_score = (grader_score_1, grader_score_2)
 
         if essay_set not in results:
