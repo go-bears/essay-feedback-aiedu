@@ -6,20 +6,18 @@ import secrets
 from typing import Optional
 from collections import defaultdict
 
+from common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
 import modal
 
-from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
 import re
 import json
 import numpy as np
-import pandas as pd
 
 INFERENCE_GPU_CONFIG = "A100:1"
 
-
 N_CLASSES = 6
-# LIMIT = np.inf
-LIMIT = 20
+LIMIT = np.inf
+# LIMIT = 20
 ASAPResults = dict[int, list[tuple[int, int]]]
 
 
@@ -52,13 +50,19 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     return results
 
 
-def extract_domain_score(text: str, domain: int) -> Optional[int]:
+def extract_domain_score(text: str, domain: int, is_local: bool = False) -> Optional[int]:
     # Step 1: Find JSON objects in the string
     # This pattern looks for text that starts with { and ends with }
     json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
 
     # Step 2: Extract the value for domain_1_score key
-    domain_score_pattern = rf'"domain_{domain}_score"\s*:\s*([0-9.]+)'
+    domain_score_key = None
+
+    domain_score_key = f"domain_{domain}_score"
+    # print(text)
+
+    domain_score_pattern = rf'(?:"{domain_score_key}"|\'{domain_score_key}\'|""{domain_score_key}"")\s*:\s*([0-9.]+)'
+
 
     # Find all potential JSON objects
     json_matches = re.findall(json_pattern, text)
@@ -66,22 +70,30 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
     for potential_json in json_matches:
         try:
             # Try to parse as JSON to validate
-            json_obj = json.loads(potential_json)
 
-            # Check if our key exists directly
-            if f"domain_{domain}_score" in json_obj:
-                return int(json_obj[f"domain_{domain}_score"])
 
             # Alternative: use regex to extract the value
             match = re.search(domain_score_pattern, potential_json)
             if match:
-                return int(match.group(1))
+                print(match)
+                try:
+                    return int(match.group(1))
+                except Exception as e:
+                    pass
+
+            json_obj = json.loads(potential_json)
+            # Check if our key exists directly
+            if f"domain_{domain}_score" in json_obj:
+                return int(json_obj[f"{domain_score_key}"])
+
         except Exception as e:
             # Not valid JSON, continue to next match
-            logging.error(e)
+            # logging.error("Error extracting domain score")
+            # logging.error(e)
             continue
-
+    logging.warning(f"This text is none: {text}")
     return None
+
 
 system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
@@ -219,16 +231,147 @@ inference_app = modal.App(
 #     inference_handle = inference_job.spawn(model_handle, run_folder)
 #     return inference_handle
 
+def inference_loop(run_folder: str, remote_job: bool = True, local_dataset_path: str = ""):
+    from datasets import load_dataset
+    results: ASAPResults = {}
+    ground_truths: ASAPResults = {}
+    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+    tmp_outs = open(os.path.join(run_folder, "tmp.json"), "w")
+    none_count = 0
+
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
+    n = min(len(eval_dataset), LIMIT)
+    times = np.zeros((n + 1, 1), dtype=np.float32)
+
+    if not remote_job:
+        import pandas as pd
+        df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
+        # print(df["comments"].astype(str))
+        # print(df[df["essay_id"] == int(grading_instruction["essay_id"])]["comments"])
+
+    for idx, grading_instruction in enumerate(eval_dataset):
+        logging.info("*" * 120)
+        logging.info("Processing essay", idx)
+        logging.info("=" * 80)
+        logging.info("Prompt:")
+        logging.info(grading_instruction)
+
+        essay_set = int(grading_instruction["essay_set"])
+
+        content: Optional[str] = None
+        if remote_job:
+            system_prompt_formatted = system_prompt.format(rubric=grading_instruction["rubric"],
+                                                           prompt=grading_instruction["essay_prompt"])
+
+            essay_set_prompt_formatted = essay_set_2_essay_prompt.format(
+                essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
+                essay_text=grading_instruction["essay_text"])
+
+            response = ollama.chat(
+                model=ollama_handle,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
+                    }
+                ], options={
+                    "num_ctx": 2 ** 15
+                })
+            content = response.message.content
+            times[idx] = response.total_duration
+        else:
+            content = (df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]).values[0]
+            # print(type(content), content)
+
+        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + content + "\n\n"
+        raw_outputs.write(out_str)
+        logging.info("=" * 80)
+        logging.info("Answer:")
+
+        try:
+            score_1 = extract_domain_score(content, 1, is_local=not remote_job)
+            score_2 = -1
+            logging.info(score_1)
+
+            if essay_set == 2:
+                score_2 = extract_domain_score(content, 2, is_local=not remote_job)
+                logging.info(score_2)
+            score = (score_1, score_2)
+            print(score)
+        except Exception as e:
+            # skip this essay
+            logging.error(e)
+            continue
+
+        # Discard from analysis
+        if score_1 is None or score_2 is None:
+            none_count += 1
+            continue
+
+        grader_score_1 = -1
+        grader_score_2 = -1
+        if essay_set == 2:
+            split = grading_instruction["grader_score"].split(" ")
+            grader_score_1 = int(split[0])
+            grader_score_2 = int(split[1])
+        else:
+            grader_score_1 = int(grading_instruction["grader_score"])
+        grader_score = (grader_score_1, grader_score_2)
+
+        if essay_set not in results:
+            results[essay_set] = [score]
+            ground_truths[essay_set] = [grader_score]
+        else:
+            results[essay_set].append(score)
+            ground_truths[essay_set].append(grader_score)
+
+        logging.info("*" * 120)
+
+        # Periodic writes
+        if idx % 100 == 0 and remote_job:
+            output = {
+                "system_prompt": system_prompt,
+                "essay_prompt": essay_prompt,
+                "essay_prompt_set_2": essay_set_2_essay_prompt,
+                "qwk_summary": compute_kappa_summary(ground_truths, results),
+                "predicted_labels": results,
+                "ground_truths": ground_truths,
+                "avg_time_ms": float(np.average(times) / (10 ** 6)),
+                "sample_size": idx,
+                "none_count": none_count
+            }
+            json.dump(output, tmp_outs)
+            VOLUME_CONFIG["/runs"].commit()
+
+        if idx == n:
+            break
+
+    # Store data in a traceable format
+    output = {
+        "system_prompt": system_prompt,
+        "essay_prompt": essay_prompt,
+        "essay_prompt_set_2": essay_set_2_essay_prompt,
+        "qwk_summary": compute_kappa_summary(ground_truths, results),
+        "predicted_labels": results,
+        "ground_truths": ground_truths,
+        "avg_time_ms": float(np.average(times) / (10 ** 6)),
+        "sample_size": n,
+        "none_count": none_count
+    }
+    outfile = open(os.path.join(run_folder, "run.json"), "w")
+    json.dump(output, outfile)
+    outfile.close()
+    raw_outputs.close()
+    tmp_outs.close()
+
 
 @inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
-def inference_job(ollama_handle: str, ):
+def inference_job(ollama_handle: str):
     import ollama
     from datasets import load_dataset
     from unsloth import FastLanguageModel
-    import pandas as pd
     import subprocess
     from datetime import datetime
-    import numpy as np
 
     # logging.basicConfig(level=logging.DEBUG)
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -297,127 +440,8 @@ def inference_job(ollama_handle: str, ):
     #     text = alpaca_prompt.format(instruction, input, output)
     #     return {"text": text, }
 
+    inference_loop(run_folder)
 
-
-    results: ASAPResults = {}
-    ground_truths: ASAPResults = {}
-    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
-    tmp_outs = open(os.path.join(run_folder, "tmp.json"), "w")
-    none_count = 0
-
-    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
-    n = min(len(eval_dataset), LIMIT)
-    times = np.empty((n + 1, 1), dtype=np.float32)
-
-    for idx, grading_instruction in enumerate(eval_dataset):
-        logging.info("*" * 120)
-        logging.info("Processing essay", idx)
-        logging.info("=" * 80)
-        logging.info("Prompt:")
-        logging.info(grading_instruction)
-
-        essay_set = int(grading_instruction["essay_set"])
-
-        system_prompt_formatted = system_prompt.format(rubric=grading_instruction["rubric"],
-                                                       prompt=grading_instruction["essay_prompt"])
-
-        essay_set_prompt_formatted = essay_set_2_essay_prompt.format(
-            essay_text=grading_instruction["essay_text"]) if essay_set == 2 else essay_prompt.format(
-            essay_text=grading_instruction["essay_text"])
-
-        # response = ollama.chat(
-        #     model=ollama_handle,
-        #     messages=[
-        #         {
-        #             "role": "user",
-        #             "content": system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
-        #         }
-        #     ], options={
-        #         "num_ctx": 2 ** 15
-        #     })
-
-        times[idx] = response.total_duration
-        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + response.message.content + "\n\n"
-        raw_outputs.write(out_str)
-        logging.info("=" * 80)
-        logging.info("Answer:")
-
-        try:
-            score_1 = extract_domain_score(response.message.content, 1)
-            score_2 = -1
-            logging.info(score_1)
-
-            if essay_set == 2:
-                score_2 = extract_domain_score(response.message.content, 2)
-                logging.info(score_2)
-            score = (score_1, score_2)
-        except Exception as e:
-            # skip this essay
-            logging.error(e)
-            continue
-
-        # Discard from analysis
-        if score_1 is None or score_2 is None:
-            none_count += 1
-            continue
-
-        grader_score_1 = -1
-        grader_score_2 = -1
-        if essay_set == 2:
-            split = grading_instruction["grader_score"].split(" ")
-            grader_score_1 = int(split[0])
-            grader_score_2 = int(split[1])
-        else:
-            grader_score_1 = int(grading_instruction["grader_score"])
-        grader_score = (grader_score_1, grader_score_2)
-
-        if essay_set not in results:
-            results[essay_set] = [score]
-            ground_truths[essay_set] = [grader_score]
-        else:
-            results[essay_set].append(score)
-            ground_truths[essay_set].append(grader_score)
-
-        logging.info("*" * 120)
-
-        # Periodic writes
-        if idx % 100 == 0:
-            output = {
-                "system_prompt": system_prompt,
-                "essay_prompt": essay_prompt,
-                "essay_prompt_set_2": essay_set_2_essay_prompt,
-                "qwk_summary": compute_kappa_summary(ground_truths, results),
-                "predicted_labels": results,
-                "ground_truths": ground_truths,
-                "avg_time_ms": float(np.average(times) / (10 ** 6)),
-                "sample_size": idx,
-                "none_count": none_count
-            }
-            json.dump(output, tmp_outs)
-            VOLUME_CONFIG["/runs"].commit()
-
-        if idx == n:
-            break
-
-    # Store data in a traceable format
-    output = {
-        "system_prompt": system_prompt,
-        "essay_prompt": essay_prompt,
-        "essay_prompt_set_2": essay_set_2_essay_prompt,
-        "qwk_summary": compute_kappa_summary(ground_truths, results),
-        "predicted_labels": results,
-        "ground_truths": ground_truths,
-        "avg_time_ms": float(np.average(times) / (10 ** 6)),
-        "sample_size": n,
-        "none_count": none_count
-    }
-    outfile = open(os.path.join(run_folder, "run.json"), "w")
-    json.dump(output, outfile)
-    outfile.close()
-    raw_outputs.close()
-    tmp_outs.close()
-
-    # pd.DataFrame(results).to_csv(EXPORT_PATH, sep="\t")
     VOLUME_CONFIG["/runs"].commit()
 
 
@@ -431,3 +455,13 @@ modal run --detach -m src.inference-ollama --model=jjordanoc/llama31-ft-asap
 def inference_main(model: str):
     handle = inference_job.spawn(model)
     handle.get()
+
+
+def local_main():
+    run_folder = "../local_runs"
+    inference_loop(run_folder, remote_job=False,
+                   local_dataset_path="/Users/joaquin/Desktop/ai_education/essay-feedback-aiedu/essay_scoring/final_llama3.2-scoring-output-2025-04-09-12-19.tsv")
+
+
+if __name__ == "__main__":
+    local_main()

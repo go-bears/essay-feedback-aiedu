@@ -21,9 +21,9 @@ pred_1 = [int(tup[0]) for tup in pred['4']]
 gt_1 = [int(tup[0]) for tup in gt['4']]
 
 
-# gt_1[8] = 1
-pred_1.append(0)
-gt_1.append(0)
+# # gt_1[8] = 1
+# pred_1.append(0)
+# gt_1.append(0)
 print("pred 1:", pred_1)
 print("gt 1:", gt_1)
 
