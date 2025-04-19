@@ -1,19 +1,18 @@
 import json
+import json
 import logging
 import os
 import re
-import secrets
-from typing import Optional
-from collections import defaultdict
-
-from common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
-import modal
-
 import re
-import json
-import numpy as np
+import secrets
+from collections import defaultdict
+from typing import Optional
 
-INFERENCE_GPU_CONFIG = "A100:1"
+import modal
+import numpy as np
+from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS
+
+INFERENCE_GPU_CONFIG = "A100:2"
 
 N_CLASSES = 6
 LIMIT = np.inf
@@ -50,37 +49,30 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     return results
 
 
-def extract_domain_score(text: str, domain: int, is_local: bool = False) -> Optional[int]:
+def extract_domain_score(text: str, domain: int) -> Optional[int]:
     # Step 1: Find JSON objects in the string
     # This pattern looks for text that starts with { and ends with }
     json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
 
     # Step 2: Extract the value for domain_1_score key
-    domain_score_key = None
-
     domain_score_key = f"domain_{domain}_score"
-    # print(text)
 
     domain_score_pattern = rf'(?:"{domain_score_key}"|\'{domain_score_key}\'|""{domain_score_key}"")\s*:\s*([0-9.]+)'
-
 
     # Find all potential JSON objects
     json_matches = re.findall(json_pattern, text)
 
     for potential_json in json_matches:
         try:
-            # Try to parse as JSON to validate
-
-
             # Alternative: use regex to extract the value
             match = re.search(domain_score_pattern, potential_json)
             if match:
-                print(match)
                 try:
                     return int(match.group(1))
                 except Exception as e:
                     pass
 
+            # Try to parse as JSON to validate
             json_obj = json.loads(potential_json)
             # Check if our key exists directly
             if f"domain_{domain}_score" in json_obj:
@@ -174,13 +166,13 @@ def init_ollama():
             # subprocess.Popen(["ollama", "serve"])
             response = httpx.get("http://localhost:11434/api/version")
             if response.status_code == 200:
-                print("Ollama service is ready")
+                logging.info("Ollama service is ready")
 
                 return
         except httpx.ConnectError:
             if time.time() - start_time > timeout:
                 raise TimeoutError("Ollama service failed to start")
-            print(
+            logging.info(
                 f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
             )
             time.sleep(interval)
@@ -231,8 +223,9 @@ inference_app = modal.App(
 #     inference_handle = inference_job.spawn(model_handle, run_folder)
 #     return inference_handle
 
-def inference_loop(run_folder: str, remote_job: bool = True, local_dataset_path: str = ""):
+def inference_loop(run_folder: str, ollama_handle: str = "", remote_job: bool = True, local_dataset_path: str = ""):
     from datasets import load_dataset
+    import ollama
     results: ASAPResults = {}
     ground_truths: ASAPResults = {}
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
@@ -246,8 +239,6 @@ def inference_loop(run_folder: str, remote_job: bool = True, local_dataset_path:
     if not remote_job:
         import pandas as pd
         df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
-        # print(df["comments"].astype(str))
-        # print(df[df["essay_id"] == int(grading_instruction["essay_id"])]["comments"])
 
     for idx, grading_instruction in enumerate(eval_dataset):
         logging.info("*" * 120)
@@ -281,7 +272,6 @@ def inference_loop(run_folder: str, remote_job: bool = True, local_dataset_path:
             times[idx] = response.total_duration
         else:
             content = (df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]).values[0]
-            # print(type(content), content)
 
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + content + "\n\n"
         raw_outputs.write(out_str)
@@ -289,15 +279,14 @@ def inference_loop(run_folder: str, remote_job: bool = True, local_dataset_path:
         logging.info("Answer:")
 
         try:
-            score_1 = extract_domain_score(content, 1, is_local=not remote_job)
+            score_1 = extract_domain_score(content, 1)
             score_2 = -1
             logging.info(score_1)
 
             if essay_set == 2:
-                score_2 = extract_domain_score(content, 2, is_local=not remote_job)
+                score_2 = extract_domain_score(content, 2)
                 logging.info(score_2)
             score = (score_1, score_2)
-            print(score)
         except Exception as e:
             # skip this essay
             logging.error(e)
@@ -380,7 +369,7 @@ def inference_job(ollama_handle: str):
     )
     run_folder = f"/runs/{run_name}"
     os.makedirs(run_folder, exist_ok=True)
-    print(f"Prepared training run in {run_folder}.")
+    logging.info(f"Prepared training run in {run_folder}.")
     init_ollama()
 
     # EXPORT_PATH = os.path.join(run_folder, "results.csv")
@@ -440,14 +429,14 @@ def inference_job(ollama_handle: str):
     #     text = alpaca_prompt.format(instruction, input, output)
     #     return {"text": text, }
 
-    inference_loop(run_folder)
+    inference_loop(run_folder, ollama_handle=ollama_handle)
 
     VOLUME_CONFIG["/runs"].commit()
 
 
 """
-Llama 3.1 FT:
-modal run --detach -m src.inference-ollama --model=jjordanoc/llama31-ft-asap
+Run using ollama handle:
+    modal run --detach -m src.inference-ollama --model=gemma3:12b
 """
 
 

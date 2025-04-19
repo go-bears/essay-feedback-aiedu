@@ -17,8 +17,8 @@ print("pred:", pred)
 print("gt:", gt)
 
 # for tup
-pred_1 = [int(tup[0]) for tup in pred['4']]
-gt_1 = [int(tup[0]) for tup in gt['4']]
+pred_1 = [int(tup[0]) for tup in pred['1']]
+gt_1 = [int(tup[0]) for tup in gt['1']]
 
 
 # # gt_1[8] = 1
