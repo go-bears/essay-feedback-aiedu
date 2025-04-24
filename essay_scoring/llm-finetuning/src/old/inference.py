@@ -16,17 +16,11 @@ else:
 
 
 with vllm_image.imports():
-    from vllm.engine.arg_utils import AsyncEngineArgs
+    from xvllm.engine.arg_utils import AsyncEngineArgs
     from vllm.engine.async_llm_engine import AsyncLLMEngine
     from vllm.sampling_params import SamplingParams
     from vllm.utils import random_uuid
     import yaml
-
-
-def get_model_path_from_run(path: Path) -> Path:
-    with (path / "config.yml").open() as f:
-        return path / yaml.safe_load(f.read())["output_dir"] / "merged"
-
 
 @app.cls(
     gpu=INFERENCE_GPU_CONFIG,

@@ -23,16 +23,14 @@ axolotl_image = (
     # modal.Image.from_registry(f"axolotlai/axolotl:main-latest")
     # modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
     modal.Image.from_registry(f"nvidia/cuda:{tag}", add_python="3.10")
-    .apt_install(
-        "git", "build-essential", "cmake", "curl", "libcurl4-openssl-dev"
-    )
+    .apt_install("git", "build-essential", "cmake", "curl", "libcurl4-openssl-dev")
     .pip_install(
         "huggingface_hub[hf_transfer]==0.30.1",
         "hf-transfer==0.1.5",
         "fastapi==0.110.0",
         "pydantic",
         "transformers==4.51.0",
-        "unsloth"
+        "unsloth",
     )
     .env(
         dict(
@@ -49,13 +47,7 @@ axolotl_image = (
 # Configure Modal image with Ollama dependencies
 
 
-vllm_image = (
-    modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
-    .pip_install("vllm==0.8.2", "torch==2.6.0", "transformers==4.50.3")
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # faster model transfers
-    .env({"VLLM_USE_V1": "0"})
-    .entrypoint([])
-)
+
 
 app = modal.App(
     APP_NAME,
@@ -75,8 +67,6 @@ VOLUME_CONFIG: dict[Union[str, PurePosixPath], modal.Volume] = {
     "/pretrained": pretrained_volume,
     "/runs": runs_volume,
 }
-
-
 
 
 class Colors:

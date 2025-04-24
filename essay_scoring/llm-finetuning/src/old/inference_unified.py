@@ -1,31 +1,30 @@
 import json
+import logging
 import os
 import re
-import re
-import secrets
 from collections import defaultdict
 from typing import Optional, Literal
 
 import modal
 import numpy as np
-from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS, Colors
+from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS, vllm_image, Colors
 
-INFERENCE_GPU_CONFIG = "A100:2"
+# Constants and types
+N_CLASSES = 6
+LIMIT = np.inf
+ASAPResults = dict[int, list[tuple[int, int]]]
 
+# Inference configuration
+INFERENCE_GPU_CONFIG = os.environ.get("INFERENCE_GPU_CONFIG", "a10g:2")
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
     INFERENCE_GPU_CONFIG = f"{INFERENCE_GPU_CONFIG}:{N_INFERENCE_GPUS}"
 else:
     N_INFERENCE_GPUS = int(INFERENCE_GPU_CONFIG.split(":")[-1])
 
-N_CLASSES = 6
-
-ASAPResults = dict[int, list[tuple[int, int]]]
-
-
+# Helper functions
 def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
     from sklearn.metrics import cohen_kappa_score
-
     results: dict[str, float | tuple[float, float]] = dict()
     avg_qwk = 0
     for essay_set in truth_dict:
@@ -38,7 +37,7 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
                 qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
                 qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
                 results[str(essay_set)] = (qwk_1, qwk_2)
-                avg_qwk += (qwk_1 + qwk_2) / 2
+                avg_qwk += ((qwk_1 + qwk_2) / 2)
             else:
                 truth_1 = [tup[0] for tup in truth_dict[essay_set]]
                 pred_1 = [tup[0] for tup in pred_dict[essay_set]]
@@ -46,21 +45,18 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
                 results[str(essay_set)] = qwk
                 avg_qwk += qwk
         except Exception as e:
-            print("Error computing Kappa")
-            print(e)
+            logging.error("Error computing Kappa")
+            logging.error(e)
     avg_qwk /= N_CLASSES
     results["avg"] = avg_qwk
     return results
 
-
 def extract_domain_score(text: str, domain: int) -> Optional[int]:
     # Step 1: Find JSON objects in the string
-    # This pattern looks for text that starts with { and ends with }
-    json_pattern = r"{(?:[^{}]|(?:{[^{}]*}))*}"
+    json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
 
     # Step 2: Extract the value for domain_1_score key
     domain_score_key = f"domain_{domain}_score"
-
     domain_score_pattern = rf'(?:"{domain_score_key}"|\'{domain_score_key}\'|""{domain_score_key}"")\s*:\s*([0-9.]+)'
 
     # Find all potential JSON objects
@@ -78,18 +74,15 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
 
             # Try to parse as JSON to validate
             json_obj = json.loads(potential_json)
-            # Check if our key exists directly
             if f"domain_{domain}_score" in json_obj:
                 return int(json_obj[f"{domain_score_key}"])
 
         except Exception as e:
-            # Not valid JSON, continue to next match
-            # print("Error extracting domain score")
-            # print(e)
             continue
+    logging.warning(f"This text is none: {text}")
     return None
 
-
+# Prompts
 system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
 Please provide a numerical score for the provided essay according to the specified rubric.
@@ -112,7 +105,6 @@ The prompt is as follows:
 """
 
 essay_prompt = """
-
 Review the given rubric and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
 
 <student_essay>
@@ -148,94 +140,7 @@ Output the scores in JSON using the following format:
 }}
 """
 
-
-def init_ollama():
-    import httpx
-    import subprocess
-    import time
-    import os
-
-    # os.environ["OLLAMA_MODELS"] = "/pretrained/ollama"
-    subprocess.run(["systemctl", "daemon-reload"])
-    subprocess.run(["systemctl", "enable", "ollama"])
-    subprocess.run(["systemctl", "start", "ollama"])
-    subprocess.Popen(["ollama", "serve"])
-
-    start_time = time.time()
-    timeout = 30
-    interval = 2
-
-    while True:
-        try:
-            # subprocess.Popen(["ollama", "serve"])
-            response = httpx.get("http://localhost:11434/api/version")
-            if response.status_code == 200:
-                print("Ollama service is ready")
-
-                return
-        except httpx.ConnectError:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("Ollama service failed to start")
-            print(
-                f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
-            )
-            time.sleep(interval)
-
-
-ollama_image = (
-    modal.Image.debian_slim()
-    .apt_install("curl", "systemctl")
-    .run_commands(  # from https://github.com/ollama/ollama/blob/main/docs/linux.md
-        "curl -L https://ollama.com/download/ollama-linux-amd64.tgz -o ollama-linux-amd64.tgz",
-        "tar -C /usr -xzf ollama-linux-amd64.tgz",
-        "useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama",
-        "usermod -a -G ollama $(whoami)",
-    )
-    .env(
-        {
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
-            "HUGGINGFACE_HUB_CACHE": "/pretrained",
-        }
-    )  # faster model transfers
-    .copy_local_file("ollama.service", "/etc/systemd/system/ollama.service")
-    .pip_install(
-        "ollama",
-        "httpx",
-        "huggingface_hub[hf_transfer]==0.30.1",
-        "fastapi==0.110.0",
-        "pydantic",
-        "transformers==4.51.0",
-        "datasets",
-        "unsloth",
-        "numpy",
-        "scikit-learn",
-    )
-    .entrypoint([])
-)
-
-vllm_image = (
-    modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
-    .run_commands("apt-get update && apt-get install -y build-essential")
-    .pip_install(
-        "vllm==0.8.2",
-        "torch==2.6.0",
-        # "transformers==4.50.3",
-        "modal",
-        "huggingface_hub[hf_transfer]==0.30.1",
-        # "fastapi==0.110.0",
-        "pydantic",
-        "transformers==4.51.0",
-        "datasets",
-        "unsloth",
-        "numpy",
-        "scikit-learn",
-    )
-    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # faster model transfers
-    .env({"VLLM_USE_V1": "0"})
-    .env({"CC": "/usr/bin/gcc"})
-    .entrypoint([])
-)
-
+# Modal app setup
 inference_app = modal.App(
     "inference",
     secrets=[
@@ -251,36 +156,29 @@ class UnifiedInference:
         self.backend = backend
         self.model_name = model_name
         self.engine = None
+        print("here")
         if self.backend == "vllm":
+            print("here2")
             with vllm_image.imports():
-                from vllm import LLM
+                from vllm.engine.arg_utils import AsyncEngineArgs
+                from vllm.engine.async_llm_engine import AsyncLLMEngine
+                from vllm.sampling_params import SamplingParams
+                from vllm.utils import random_uuid
 
-            print(
-                Colors.GREEN,
-                Colors.BOLD,
-                f"🧠: Initializing vLLM engine for model {self.model_name}",
-                Colors.END,
-                sep="",
-            )
-            VOLUME_CONFIG["/pretrained"].reload()
-            self.engine = LLM(
+            print(Colors.GREEN, Colors.BOLD, f"🧠: Initializing vLLM engine for model {self.model_name}", Colors.END, sep="")
+            
+            engine_args = AsyncEngineArgs(
                 model=self.model_name,
-                tensor_parallel_size=N_INFERENCE_GPUS,
-                pipeline_parallel_size=1,
                 gpu_memory_utilization=0.95,
-                block_size=32,
-                cpu_offload_gb=10,
-                max_model_len=131072,
-                max_num_seqs=2,
+                tensor_parallel_size=N_INFERENCE_GPUS,
                 disable_custom_all_reduce=True,
-                enable_chunked_prefill=True,
             )
-            VOLUME_CONFIG["/pretrained"].commit()
+            self.engine = AsyncLLMEngine.from_engine_args(engine_args)
         else:  # ollama
             import httpx
             import subprocess
             import time
-
+            
             subprocess.run(["systemctl", "daemon-reload"])
             subprocess.run(["systemctl", "enable", "ollama"])
             subprocess.run(["systemctl", "start", "ollama"])
@@ -294,17 +192,19 @@ class UnifiedInference:
                 try:
                     response = httpx.get("http://localhost:11434/api/version")
                     if response.status_code == 200:
-                        print("Ollama service is ready")
+                        logging.info("Ollama service is ready")
                         break
                 except httpx.ConnectError:
                     if time.time() - start_time > timeout:
                         raise TimeoutError("Ollama service failed to start")
-                    print(
-                        f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
-                    )
+                    logging.info(f"Waiting for Ollama service... ({int(time.time() - start_time)}s)")
                     time.sleep(interval)
 
-    def generate(self, prompt: str) -> str:
+    # @modal.enter()
+    # def init(self):
+        
+
+    async def generate(self, prompt: str) -> str:
         if self.backend == "vllm":
             from vllm.sampling_params import SamplingParams
             from vllm.utils import random_uuid
@@ -317,16 +217,22 @@ class UnifiedInference:
                 max_tokens=1024,
             )
             request_id = random_uuid()
-            outputs = self.engine.generate(prompt, sampling_params)
-            full_response = outputs[0].outputs[0].text
-            print(f"Full response: {full_response}")
+            results_generator = self.engine.generate(prompt, sampling_params, request_id)
+            
+            full_response = ""
+            async for request_output in results_generator:
+                if request_output.outputs[0].text and "\ufffd" != request_output.outputs[0].text[-1]:
+                    full_response += request_output.outputs[0].text
             return full_response
         else:  # ollama
             import httpx
-
             response = httpx.post(
                 "http://localhost:11434/api/generate",
-                json={"model": self.model_name, "prompt": prompt, "stream": False},
+                json={
+                    "model": self.model_name,
+                    "prompt": prompt,
+                    "stream": False
+                }
             )
             return response.json()["response"]
 
@@ -338,26 +244,16 @@ class UnifiedInference:
     #         if hasattr(self.engine, '_background_loop_unshielded'):
     #             self.engine._background_loop_unshielded.cancel()
 
-
-# @inference_app.function(image=ollama_image, timeout=60 * MINUTES, volumes=VOLUME_CONFIG)
-# def setup_job(model_handle: str):
-#
-#     inference_handle = inference_job.spawn(model_handle, run_folder)
-#     return inference_handle
-
-
-def inference_loop(
+# Inference loop
+async def inference_loop(
     run_folder: str,
     model_name: str,
     backend: Literal["ollama", "vllm"] = "ollama",
     remote_job: bool = True,
-    local_dataset_path: str = "",
-    few_shot_n: int = 0,
-    limit: int = np.inf,
+    local_dataset_path: str = ""
 ):
     from datasets import load_dataset
     import time
-
     results: ASAPResults = {}
     ground_truths: ASAPResults = {}
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
@@ -365,54 +261,22 @@ def inference_loop(
     none_count = 0
 
     eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
-
-    # prepare examples
-    few_shot_examples = ""
-    if few_shot_n > 0:
-        few_shot_examples = "Here are some examples of essays and their scores:\n"
-        train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
-        for idx, grading_instruction in enumerate(train_dataset):
-            few_shot_str = f"""
-            <example_essay>
-            {grading_instruction["essay_text"]}
-            </example_essay>
-            """
-            if int(grading_instruction["essay_set"]) == 2:
-                few_shot_str += f"""
-                <example_output>
-                {{
-                    "domain_1_score": {grading_instruction["grader_score"].split(" ")[0]},
-                    "domain_2_score": {grading_instruction["grader_score"].split(" ")[1]}
-                }}
-                </example_output>
-                """
-            else:
-                few_shot_str += f"""
-                <example_output>
-                {{
-                    "domain_1_score": {grading_instruction["grader_score"]}
-                }}
-                </example_output>
-                """
-            few_shot_examples += few_shot_str
-
-    n = min(len(eval_dataset), limit)
+    n = min(len(eval_dataset), LIMIT)
     times = np.zeros((n + 1, 1), dtype=np.float32)
 
     if not remote_job:
         import pandas as pd
-
         df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
 
     # Initialize the inference engine
     inference = UnifiedInference(backend=backend, model_name=model_name)
 
     for idx, grading_instruction in enumerate(eval_dataset):
-        print("*" * 120)
-        print("Processing essay", idx)
-        print("=" * 80)
-        print("Prompt:")
-        print(grading_instruction)
+        logging.info("*" * 120)
+        logging.info("Processing essay", idx)
+        logging.info("=" * 80)
+        logging.info("Prompt:")
+        logging.info(grading_instruction)
 
         essay_set = int(grading_instruction["essay_set"])
 
@@ -420,45 +284,41 @@ def inference_loop(
         if remote_job:
             system_prompt_formatted = system_prompt.format(
                 rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"],
+                prompt=grading_instruction["essay_prompt"]
             )
 
             essay_set_prompt_formatted = (
-                essay_set_2_essay_prompt.format(
-                    essay_text=grading_instruction["essay_text"]
-                )
+                essay_set_2_essay_prompt.format(essay_text=grading_instruction["essay_text"])
                 if essay_set == 2
                 else essay_prompt.format(essay_text=grading_instruction["essay_text"])
             )
 
-            full_prompt = system_prompt_formatted + "\n\n" + few_shot_examples + "\n\n" + essay_set_prompt_formatted
+            full_prompt = system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
             
             # Use the unified inference interface
             start_time = time.time()
-            content = inference.generate(full_prompt)
+            content = await inference.generate(full_prompt)
             times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         else:
-            content = (
-                df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]
-            ).values[0]
+            content = (df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]).values[0]
 
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + content + "\n\n"
         raw_outputs.write(out_str)
-        print("=" * 80)
-        print("Answer:")
+        logging.info("=" * 80)
+        logging.info("Answer:")
 
         try:
             score_1 = extract_domain_score(content, 1)
             score_2 = -1
-            print(score_1)
+            logging.info(score_1)
 
             if essay_set == 2:
                 score_2 = extract_domain_score(content, 2)
-                print(score_2)
+                logging.info(score_2)
             score = (score_1, score_2)
         except Exception as e:
             # skip this essay
-            print(e)
+            logging.error(e)
             continue
 
         # Discard from analysis
@@ -483,7 +343,7 @@ def inference_loop(
             results[essay_set].append(score)
             ground_truths[essay_set].append(grader_score)
 
-        print("*" * 120)
+        logging.info("*" * 120)
 
         # Periodic writes
         if idx % 100 == 0 and remote_job:
@@ -494,9 +354,9 @@ def inference_loop(
                 "qwk_summary": compute_kappa_summary(ground_truths, results),
                 "predicted_labels": results,
                 "ground_truths": ground_truths,
-                "avg_time_ms": float(np.average(times) / (10**6)),
+                "avg_time_ms": float(np.average(times) / (10 ** 6)),
                 "sample_size": idx,
-                "none_count": none_count,
+                "none_count": none_count
             }
             json.dump(output, tmp_outs)
             VOLUME_CONFIG["/runs"].commit()
@@ -508,15 +368,13 @@ def inference_loop(
     output = {
         "system_prompt": system_prompt,
         "essay_prompt": essay_prompt,
-        "few_shot_n": few_shot_n,
-        "few_shot_examples": few_shot_examples,
         "essay_prompt_set_2": essay_set_2_essay_prompt,
         "qwk_summary": compute_kappa_summary(ground_truths, results),
         "predicted_labels": results,
         "ground_truths": ground_truths,
-        "avg_time_ms": float(np.average(times) / (10**6)),
+        "avg_time_ms": float(np.average(times) / (10 ** 6)),
         "sample_size": n,
-        "none_count": none_count,
+        "none_count": none_count
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
     json.dump(output, outfile)
@@ -524,81 +382,32 @@ def inference_loop(
     raw_outputs.close()
     tmp_outs.close()
 
-
-# @inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
-# def inference_ollama(ollama_handle: str):
-#     import ollama
-#     from datasets import load_dataset
-#     from unsloth import FastLanguageModel
-#     import subprocess
-#     from datetime import datetime
-
-#     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-#     run_name = (
-#         f"ollama-{ollama_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
-#     )
-#     run_folder = f"/runs/{run_name}"
-#     os.makedirs(run_folder, exist_ok=True)
-#     print(f"Prepared training run in {run_folder}.")
-#     init_ollama()
-
-#     VOLUME_CONFIG["/pretrained"].reload()
-#     subprocess.run(["ollama", "pull", ollama_handle], stdout=subprocess.PIPE)
-#     VOLUME_CONFIG["/pretrained"].commit()
-
-#     inference_loop(run_folder, ollama_handle=ollama_handle)
-
-#     VOLUME_CONFIG["/runs"].commit()
-
-
+# Modal function for inference job
 @inference_app.function(
-    image=vllm_image,
+    image=vllm_image if os.environ.get("INFERENCE_BACKEND", "ollama") == "vllm" else ollama_image,
     timeout=24 * HOURS,
     volumes=VOLUME_CONFIG,
-    gpu=INFERENCE_GPU_CONFIG,
+    gpu=INFERENCE_GPU_CONFIG
 )
-def inference_vllm(model_handle: str, few_shot_n: int = 0, limit: int = np.inf):
-    from datetime import datetime
+def inference_job(model_name: str, backend: str = "ollama"):
+    import asyncio
+    asyncio.run(inference_loop("", model_name=model_name, backend=backend))
 
-    time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    run_name = (
-        f"vllm-{model_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
-    )
-    run_folder = f"/runs/{run_name}"
-    os.makedirs(run_folder, exist_ok=True)
-    print(f"Prepared training run in {run_folder}.")
-    # VOLUME_CONFIG["/runs"].reload()
-    inference_loop(run_folder, model_name=model_handle, backend="vllm", few_shot_n=few_shot_n, limit=limit)
-    VOLUME_CONFIG["/runs"].commit()
-
-
-"""
-Run using vllm handle:
-    modal run --detach -m src.inference-ollama --model=google/gemma-3-12b-it --backend=vllm
-
-Run using ollama handle:
-    modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
-"""
-
-
+# Entry points
 @inference_app.local_entrypoint()
-def inference_main(model: str, backend: str, shots: int = 0, limit: int = np.inf):
-    if backend == "ollama":
-        # handle = inference_ollama.spawn(model)
-        pass
-    else:
-        handle = inference_vllm.spawn(model, few_shot_n=shots, limit=limit)
-    handle.get()
-
+def inference_main(model: str, backend: str = "ollama"):
+    import asyncio
+    asyncio.run(inference_loop("", model_name=model, backend=backend))
 
 def local_main():
-    run_folder = "../local_runs"
-    inference_loop(
-        run_folder,
-        remote_job=False,
-        local_dataset_path="/Users/joaquin/Desktop/ai_education/essay-feedback-aiedu/essay_scoring/final_llama3.2-scoring-output-2025-04-09-12-19.tsv",
-    )
-
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=str, required=True, help="Model name to use for inference")
+    parser.add_argument("--backend", type=str, default="ollama", choices=["ollama", "vllm"], help="Backend to use for inference")
+    args = parser.parse_args()
+    
+    import asyncio
+    asyncio.run(inference_loop("", model_name=args.model, backend=args.backend))
 
 if __name__ == "__main__":
-    local_main()
+    local_main() 
