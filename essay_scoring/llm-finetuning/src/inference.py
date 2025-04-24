@@ -267,12 +267,12 @@ class UnifiedInference:
                 model=self.model_name,
                 tensor_parallel_size=N_INFERENCE_GPUS,
                 pipeline_parallel_size=1,
-                gpu_memory_utilization=0.95,
-                block_size=32,
-                cpu_offload_gb=10,
-                max_model_len=131072,
-                max_num_seqs=2,
-                disable_custom_all_reduce=True,
+                gpu_memory_utilization=0.98,
+                block_size=128,
+                cpu_offload_gb=0,
+                max_model_len=128000,
+                max_num_seqs=8,
+                disable_custom_all_reduce=False,
                 enable_chunked_prefill=True,
             )
             VOLUME_CONFIG["/pretrained"].commit()
@@ -346,6 +346,39 @@ class UnifiedInference:
 #     return inference_handle
 
 
+
+
+def get_examples(train_df, essay_set: int, num: int) -> str:
+    few_shot_examples = "Here are some examples of essays and their scores:\n"
+
+    for idx, row in enumerate(train_df[train_df["essay_set"] == str(essay_set)].itertuples()):
+        # print(idx, row, num)
+        if idx >= num:
+            break
+        few_shot_examples += f"""
+<example_essay>
+{row.essay_text}
+</example_essay>
+        """
+        if int(row.essay_set) == 2:
+            few_shot_examples += f"""
+<example_output>
+{{
+    "domain_1_score": {row.grader_score.split(" ")[0]},
+    "domain_2_score": {row.grader_score.split(" ")[1]}
+}}
+</example_output>
+            """
+        else:
+            few_shot_examples += f"""
+<example_output>
+{{
+    "domain_1_score": {row.grader_score}
+}}
+</example_output>
+            """
+    return few_shot_examples
+
 def inference_loop(
     run_folder: str,
     model_name: str,
@@ -353,50 +386,24 @@ def inference_loop(
     remote_job: bool = True,
     local_dataset_path: str = "",
     few_shot_n: int = 0,
-    limit: int = np.inf,
+    limit: Optional[int] = None,
+    add_argument_annotation: bool = False,
 ):
     from datasets import load_dataset
     import time
+    import pandas as pd
 
     results: ASAPResults = {}
     ground_truths: ASAPResults = {}
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
-    tmp_outs = open(os.path.join(run_folder, "tmp.json"), "w")
     none_count = 0
 
     eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
+    
+    train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
+    train_df = pd.DataFrame(train_dataset)
 
-    # prepare examples
-    few_shot_examples = ""
-    if few_shot_n > 0:
-        few_shot_examples = "Here are some examples of essays and their scores:\n"
-        train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
-        for idx, grading_instruction in enumerate(train_dataset):
-            few_shot_str = f"""
-            <example_essay>
-            {grading_instruction["essay_text"]}
-            </example_essay>
-            """
-            if int(grading_instruction["essay_set"]) == 2:
-                few_shot_str += f"""
-                <example_output>
-                {{
-                    "domain_1_score": {grading_instruction["grader_score"].split(" ")[0]},
-                    "domain_2_score": {grading_instruction["grader_score"].split(" ")[1]}
-                }}
-                </example_output>
-                """
-            else:
-                few_shot_str += f"""
-                <example_output>
-                {{
-                    "domain_1_score": {grading_instruction["grader_score"]}
-                }}
-                </example_output>
-                """
-            few_shot_examples += few_shot_str
-
-    n = min(len(eval_dataset), limit)
+    n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
 
     if not remote_job:
@@ -411,10 +418,11 @@ def inference_loop(
         print("*" * 120)
         print("Processing essay", idx)
         print("=" * 80)
-        print("Prompt:")
-        print(grading_instruction)
+        # print("Prompt:")
+        # print(grading_instruction)
 
         essay_set = int(grading_instruction["essay_set"])
+        essay_id = grading_instruction["essay_id"]
 
         content: Optional[str] = None
         if remote_job:
@@ -431,18 +439,25 @@ def inference_loop(
                 else essay_prompt.format(essay_text=grading_instruction["essay_text"])
             )
 
-            full_prompt = system_prompt_formatted + "\n\n" + few_shot_examples + "\n\n" + essay_set_prompt_formatted
-            
+            full_prompt = system_prompt_formatted + "\n\n"
+            if few_shot_n > 0:
+                full_prompt += get_examples(train_df, essay_set=essay_set, num=few_shot_n) + "\n\n"
+            full_prompt += essay_set_prompt_formatted 
+            if add_argument_annotation:
+                full_prompt += "Here is an annotation of the essay's argument components to assist you in scoring:\n" + "<student_essay_argument_annotation>\n" + grading_instruction["argument_annotation"] + "\n</student_essay_argument_annotation>\n\n"
+            full_prompt += "<output>" + "\n" + "<explanation>"
+
             # Use the unified inference interface
             start_time = time.time()
             content = inference.generate(full_prompt)
             times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         else:
+            full_prompt = ""
             content = (
                 df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]
             ).values[0]
 
-        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + content + "\n\n"
+        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + "\nPrompt:\n" + full_prompt + "\n\n" + "Response:\n" + content + "\n\n"
         raw_outputs.write(out_str)
         print("=" * 80)
         print("Answer:")
@@ -487,19 +502,22 @@ def inference_loop(
 
         # Periodic writes
         if idx % 100 == 0 and remote_job:
-            output = {
-                "system_prompt": system_prompt,
-                "essay_prompt": essay_prompt,
-                "essay_prompt_set_2": essay_set_2_essay_prompt,
-                "qwk_summary": compute_kappa_summary(ground_truths, results),
-                "predicted_labels": results,
-                "ground_truths": ground_truths,
-                "avg_time_ms": float(np.average(times) / (10**6)),
-                "sample_size": idx,
-                "none_count": none_count,
-            }
-            json.dump(output, tmp_outs)
-            VOLUME_CONFIG["/runs"].commit()
+            with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
+                output = {
+                    "system_prompt": system_prompt,
+                    "essay_prompt": essay_prompt,
+                    "few_shot_n": few_shot_n,
+                    "add_argument_annotation": add_argument_annotation,
+                    "essay_prompt_set_2": essay_set_2_essay_prompt,
+                    "qwk_summary": compute_kappa_summary(ground_truths, results),
+                    "predicted_labels": results,
+                    "ground_truths": ground_truths,
+                    "avg_time_ms": float(np.average(times) / (10**6)),
+                    "sample_size": idx,
+                    "none_count": none_count,
+                }
+                json.dump(output, tmp_outs)
+                VOLUME_CONFIG["/runs"].commit()
 
         if idx == n:
             break
@@ -509,7 +527,7 @@ def inference_loop(
         "system_prompt": system_prompt,
         "essay_prompt": essay_prompt,
         "few_shot_n": few_shot_n,
-        "few_shot_examples": few_shot_examples,
+        "add_argument_annotation": add_argument_annotation,
         "essay_prompt_set_2": essay_set_2_essay_prompt,
         "qwk_summary": compute_kappa_summary(ground_truths, results),
         "predicted_labels": results,
@@ -557,37 +575,41 @@ def inference_loop(
     volumes=VOLUME_CONFIG,
     gpu=INFERENCE_GPU_CONFIG,
 )
-def inference_vllm(model_handle: str, few_shot_n: int = 0, limit: int = np.inf):
+def inference_vllm(model_handle: str, few_shot_n: int = 0, limit: Optional[int] = None, add_argument_annotation: bool = False):
     from datetime import datetime
 
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = (
-        f"vllm-{model_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
+        f"vllm-{model_handle.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
     )
     run_folder = f"/runs/{run_name}"
     os.makedirs(run_folder, exist_ok=True)
-    print(f"Prepared training run in {run_folder}.")
+    print( Colors.BLUE, Colors.BOLD, "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/" + run_name, Colors.END, sep="", )
     # VOLUME_CONFIG["/runs"].reload()
-    inference_loop(run_folder, model_name=model_handle, backend="vllm", few_shot_n=few_shot_n, limit=limit)
+    inference_loop(run_folder, model_name=model_handle, backend="vllm", few_shot_n=few_shot_n, limit=limit, add_argument_annotation=add_argument_annotation)
     VOLUME_CONFIG["/runs"].commit()
+    print( Colors.GREEN, Colors.BOLD, "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/" + run_name, Colors.END, sep="", )
 
 
 """
 Run using vllm handle:
-    modal run --detach -m src.inference-ollama --model=google/gemma-3-12b-it --backend=vllm
+    modal run --detach -m src.inference --model=google/gemma-3-12b-it --backend=vllm --shots=1 --arguments 
 
-Run using ollama handle:
+Deepseek With arguments:
+    modal run --detach -m src.inference --model=deepseek-ai/DeepSeek-R1-Distill-Llama-8B --backend=vllm --shots=1 --arguments
+    
+Run using ollama handle:x
     modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
 """
 
 
 @inference_app.local_entrypoint()
-def inference_main(model: str, backend: str, shots: int = 0, limit: int = np.inf):
+def inference_main(model: str, backend: str, shots: int = 0, limit: Optional[int] = None, arguments: bool = False):
     if backend == "ollama":
         # handle = inference_ollama.spawn(model)
         pass
     else:
-        handle = inference_vllm.spawn(model, few_shot_n=shots, limit=limit)
+        handle = inference_vllm.spawn(model, few_shot_n=shots, limit=limit, add_argument_annotation=arguments)
     handle.get()
 
 

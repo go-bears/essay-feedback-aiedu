@@ -6,16 +6,6 @@ import os
 # import chevron
 import pandas as pd
 
-# Define the folder where your mustache templates are stored.
-# TEMPLATE_FOLDER = "templates"
-
-
-# def _get_templated(name: str, **kwargs) -> str:
-#     """Helper function that renders a mustache template from TEMPLATE_FOLDER."""
-#     template_path = os.path.join(TEMPLATE_FOLDER, f"{name}.mustache")
-#     with open(template_path, "r") as f:
-#         return chevron.render(f, data=kwargs)
-
 
 def main(args):
     # Read the train IDs (should contain at least an 'essay_id' column)
@@ -24,6 +14,7 @@ def main(args):
 
     # Read the full training set (TSV file)
     df = pd.read_csv(args.training_set_tsv, sep="\t", encoding="ISO-8859-1")
+    argument_annotation_df = pd.read_csv(args.argument_annotation_tsv, sep="\t", encoding="ISO-8859-1")
 
     # NaN should be none for ints
     df = df.replace({float('nan'): None})
@@ -89,7 +80,8 @@ def main(args):
                     "essay_text": essay_text,
                     "rubric": rubric,
                     "essay_set": essay_set,
-                    "grader_score": f"{domain1_score}" if essay_set != 2 else f"{domain1_score} {domain2_score}"
+                    "grader_score": f"{domain1_score}" if essay_set != 2 else f"{domain1_score} {domain2_score}",
+                    "argument_annotation": argument_annotation_df[argument_annotation_df["essay_id"] == essay_id]["segmented_essays"].values[0]
                 }
 
                 # Write out the JSON object as one line in the jsonl file.
@@ -116,6 +108,7 @@ if __name__ == "__main__":
     parser.add_argument("--output_format_special",
                         default="Your output should consist of two scores corresponding to the two domains: Writing applications and Language Conventions, both numbers separated by one space",
                         help="Output format for essay_set == 2")
-
+    parser.add_argument("--argument_annotation_tsv", default="../essay_argument_annotation/asap_aes_data_segmented.tsv",
+                        help="Path to the argument annotation TSV file")
     args = parser.parse_args()
     main(args)
