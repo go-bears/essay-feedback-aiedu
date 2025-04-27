@@ -22,9 +22,11 @@ if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
 else:
     N_INFERENCE_GPUS = int(INFERENCE_GPU_CONFIG.split(":")[-1])
 
+
 # Helper functions
 def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
     from sklearn.metrics import cohen_kappa_score
+
     results: dict[str, float | tuple[float, float]] = dict()
     avg_qwk = 0
     for essay_set in truth_dict:
@@ -37,7 +39,7 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
                 qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
                 qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
                 results[str(essay_set)] = (qwk_1, qwk_2)
-                avg_qwk += ((qwk_1 + qwk_2) / 2)
+                avg_qwk += (qwk_1 + qwk_2) / 2
             else:
                 truth_1 = [tup[0] for tup in truth_dict[essay_set]]
                 pred_1 = [tup[0] for tup in pred_dict[essay_set]]
@@ -51,9 +53,10 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     results["avg"] = avg_qwk
     return results
 
+
 def extract_domain_score(text: str, domain: int) -> Optional[int]:
     # Step 1: Find JSON objects in the string
-    json_pattern = r'{(?:[^{}]|(?:{[^{}]*}))*}'
+    json_pattern = r"{(?:[^{}]|(?:{[^{}]*}))*}"
 
     # Step 2: Extract the value for domain_1_score key
     domain_score_key = f"domain_{domain}_score"
@@ -81,6 +84,7 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
             continue
     logging.warning(f"This text is none: {text}")
     return None
+
 
 # Prompts
 system_prompt = """
@@ -150,6 +154,7 @@ inference_app = modal.App(
     ],
 )
 
+
 # Unified Inference Class
 class UnifiedInference:
     def __init__(self, backend: Literal["ollama", "vllm"], model_name: str = ""):
@@ -165,8 +170,14 @@ class UnifiedInference:
                 from vllm.sampling_params import SamplingParams
                 from vllm.utils import random_uuid
 
-            print(Colors.GREEN, Colors.BOLD, f"🧠: Initializing vLLM engine for model {self.model_name}", Colors.END, sep="")
-            
+            print(
+                Colors.GREEN,
+                Colors.BOLD,
+                f"🧠: Initializing vLLM engine for model {self.model_name}",
+                Colors.END,
+                sep="",
+            )
+
             engine_args = AsyncEngineArgs(
                 model=self.model_name,
                 gpu_memory_utilization=0.95,
@@ -178,7 +189,7 @@ class UnifiedInference:
             import httpx
             import subprocess
             import time
-            
+
             subprocess.run(["systemctl", "daemon-reload"])
             subprocess.run(["systemctl", "enable", "ollama"])
             subprocess.run(["systemctl", "start", "ollama"])
@@ -197,12 +208,13 @@ class UnifiedInference:
                 except httpx.ConnectError:
                     if time.time() - start_time > timeout:
                         raise TimeoutError("Ollama service failed to start")
-                    logging.info(f"Waiting for Ollama service... ({int(time.time() - start_time)}s)")
+                    logging.info(
+                        f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
+                    )
                     time.sleep(interval)
 
     # @modal.enter()
     # def init(self):
-        
 
     async def generate(self, prompt: str) -> str:
         if self.backend == "vllm":
@@ -217,22 +229,24 @@ class UnifiedInference:
                 max_tokens=1024,
             )
             request_id = random_uuid()
-            results_generator = self.engine.generate(prompt, sampling_params, request_id)
-            
+            results_generator = self.engine.generate(
+                prompt, sampling_params, request_id
+            )
+
             full_response = ""
             async for request_output in results_generator:
-                if request_output.outputs[0].text and "\ufffd" != request_output.outputs[0].text[-1]:
+                if (
+                    request_output.outputs[0].text
+                    and "\ufffd" != request_output.outputs[0].text[-1]
+                ):
                     full_response += request_output.outputs[0].text
             return full_response
         else:  # ollama
             import httpx
+
             response = httpx.post(
                 "http://localhost:11434/api/generate",
-                json={
-                    "model": self.model_name,
-                    "prompt": prompt,
-                    "stream": False
-                }
+                json={"model": self.model_name, "prompt": prompt, "stream": False},
             )
             return response.json()["response"]
 
@@ -244,16 +258,18 @@ class UnifiedInference:
     #         if hasattr(self.engine, '_background_loop_unshielded'):
     #             self.engine._background_loop_unshielded.cancel()
 
+
 # Inference loop
 async def inference_loop(
     run_folder: str,
     model_name: str,
     backend: Literal["ollama", "vllm"] = "ollama",
     remote_job: bool = True,
-    local_dataset_path: str = ""
+    local_dataset_path: str = "",
 ):
     from datasets import load_dataset
     import time
+
     results: ASAPResults = {}
     ground_truths: ASAPResults = {}
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
@@ -266,6 +282,7 @@ async def inference_loop(
 
     if not remote_job:
         import pandas as pd
+
         df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
 
     # Initialize the inference engine
@@ -284,23 +301,27 @@ async def inference_loop(
         if remote_job:
             system_prompt_formatted = system_prompt.format(
                 rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"]
+                prompt=grading_instruction["essay_prompt"],
             )
 
             essay_set_prompt_formatted = (
-                essay_set_2_essay_prompt.format(essay_text=grading_instruction["essay_text"])
+                essay_set_2_essay_prompt.format(
+                    essay_text=grading_instruction["essay_text"]
+                )
                 if essay_set == 2
                 else essay_prompt.format(essay_text=grading_instruction["essay_text"])
             )
 
             full_prompt = system_prompt_formatted + "\n\n" + essay_set_prompt_formatted
-            
+
             # Use the unified inference interface
             start_time = time.time()
             content = await inference.generate(full_prompt)
             times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         else:
-            content = (df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]).values[0]
+            content = (
+                df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]
+            ).values[0]
 
         out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + content + "\n\n"
         raw_outputs.write(out_str)
@@ -354,9 +375,9 @@ async def inference_loop(
                 "qwk_summary": compute_kappa_summary(ground_truths, results),
                 "predicted_labels": results,
                 "ground_truths": ground_truths,
-                "avg_time_ms": float(np.average(times) / (10 ** 6)),
+                "avg_time_ms": float(np.average(times) / (10**6)),
                 "sample_size": idx,
-                "none_count": none_count
+                "none_count": none_count,
             }
             json.dump(output, tmp_outs)
             VOLUME_CONFIG["/runs"].commit()
@@ -372,9 +393,9 @@ async def inference_loop(
         "qwk_summary": compute_kappa_summary(ground_truths, results),
         "predicted_labels": results,
         "ground_truths": ground_truths,
-        "avg_time_ms": float(np.average(times) / (10 ** 6)),
+        "avg_time_ms": float(np.average(times) / (10**6)),
         "sample_size": n,
-        "none_count": none_count
+        "none_count": none_count,
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
     json.dump(output, outfile)
@@ -382,32 +403,52 @@ async def inference_loop(
     raw_outputs.close()
     tmp_outs.close()
 
+
 # Modal function for inference job
 @inference_app.function(
-    image=vllm_image if os.environ.get("INFERENCE_BACKEND", "ollama") == "vllm" else ollama_image,
+    image=(
+        vllm_image
+        if os.environ.get("INFERENCE_BACKEND", "ollama") == "vllm"
+        else ollama_image
+    ),
     timeout=24 * HOURS,
     volumes=VOLUME_CONFIG,
-    gpu=INFERENCE_GPU_CONFIG
+    gpu=INFERENCE_GPU_CONFIG,
 )
 def inference_job(model_name: str, backend: str = "ollama"):
     import asyncio
+
     asyncio.run(inference_loop("", model_name=model_name, backend=backend))
+
 
 # Entry points
 @inference_app.local_entrypoint()
 def inference_main(model: str, backend: str = "ollama"):
     import asyncio
+
     asyncio.run(inference_loop("", model_name=model, backend=backend))
+
 
 def local_main():
     import argparse
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", type=str, required=True, help="Model name to use for inference")
-    parser.add_argument("--backend", type=str, default="ollama", choices=["ollama", "vllm"], help="Backend to use for inference")
+    parser.add_argument(
+        "--model", type=str, required=True, help="Model name to use for inference"
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="ollama",
+        choices=["ollama", "vllm"],
+        help="Backend to use for inference",
+    )
     args = parser.parse_args()
-    
+
     import asyncio
+
     asyncio.run(inference_loop("", model_name=args.model, backend=args.backend))
 
+
 if __name__ == "__main__":
-    local_main() 
+    local_main()

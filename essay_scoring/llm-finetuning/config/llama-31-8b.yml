@@ -1,0 +1,42 @@
+# train.yaml
+model:
+  base_model: unsloth/Meta-Llama-3.1-8B
+  tokenizer: unsloth/Meta-Llama-3.1-8B
+
+peft:
+  type: lora
+  r: 16
+  alpha: 16
+  target_modules: ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
+  dropout: 0.0
+
+data:
+  dataset:
+    name: jjordanoc/argumentative-asap
+    split: train
+  validation:
+    name: jjordanoc/argumentative-asap
+    split: validation
+    max_eval_samples: 100  # subset
+
+training:
+  epochs: 2
+  per_device_train_batch_size: 8   # tune to fit
+  per_device_eval_batch_size: 1
+  eval_strategy: steps
+  eval_steps: 50
+  save_strategy: epoch
+  logging_steps: 1
+  learning_rate: 2e-4
+  weight_decay: 0.01
+  optim: adamw_8bit
+  lr_scheduler: linear
+  seed: 3407
+  fp16: true
+  bf16: false      # set true if you want bf16
+
+accelerate:
+  distributed_type: MULTI_GPU
+  num_processes: 2
+  mixed_precision: bf16
+  deepspeed_config: ds_config.json   # optional ZeRO offload

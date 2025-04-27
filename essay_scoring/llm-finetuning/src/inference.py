@@ -8,9 +8,23 @@ from typing import Optional, Literal
 
 import modal
 import numpy as np
-from .common import VOLUME_CONFIG, MINUTES, ALLOW_WANDB, HOURS, Colors
+from .common import (
+    VOLUME_CONFIG,
+    MINUTES,
+    ALLOW_WANDB,
+    HOURS,
+    Colors,
+    SUPPORTED_MODELS,
+    format_prompt_inference_iter1,
+    format_prompt_inference_ft,
+    system_prompt,
+    essay_prompt_instruction,
+    essay_set_2_essay_prompt_instruction,
+    output_prompt,
+    output_prompt_set_2,
+)
 
-INFERENCE_GPU_CONFIG = "A100:2"
+INFERENCE_GPU_CONFIG = "A100-80GB:1"
 
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
@@ -90,65 +104,6 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
     return None
 
 
-system_prompt = """
-You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
-Please provide a numerical score for the provided essay according to the specified rubric.
-
-- The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
-- Provide an appropriate holistic score for limited timed test conditions where there is little to no time for revision.
-- You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
-- You will provide a detailed explanation to your decisions as to why you chose this score following the rubric and guidelines.
-- Essay length matters. A good essay is generally comprised of at least 5 well-developed sentences.
-
-The rubric or rubrics for this essay is as follows:
-<rubric>
-{rubric}
-</rubric>
-
-The prompt is as follows:
-<essay_prompt>
-{prompt}
-</essay_prompt>
-"""
-
-essay_prompt = """
-
-Review the given rubric and prompt carefully. The essay that requires a holistic score from the rubric is as follows:
-
-<student_essay>
-{essay_text}
-</student_essay>
-
-Provide a numerical domain_1_score by using the provided rubric's guidance.
-Output the score in JSON using the following format:
-{{
-    "domain_1_score": {{essay_score}}
-}}
-"""
-
-essay_set_2_essay_prompt = """
-This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
-
-Please provide a numerical score for each domain based on the appropriate rubric.
-Domain 1: Writing Applications
-Domain 2: Language Conventions
-
-- Be sure to Review the given rubrics and prompt carefully, reasoning through your decision for each domain.
-
-The essay that requires two scores from the rubric is as follows:
-
-<student_essay>
-{essay_text}
-</student_essay>
-
-Output the scores in JSON using the following format:
-{{
-    "domain_1_score": {{domain_score_1}},
-    "domain_2_score": {{domain_score_2}}
-}}
-"""
-
-
 def init_ollama():
     import httpx
     import subprocess
@@ -176,9 +131,7 @@ def init_ollama():
         except httpx.ConnectError:
             if time.time() - start_time > timeout:
                 raise TimeoutError("Ollama service failed to start")
-            print(
-                f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
-            )
+            print(f"Waiting for Ollama service... ({int(time.time() - start_time)}s)")
             time.sleep(interval)
 
 
@@ -245,12 +198,24 @@ inference_app = modal.App(
     ],
 )
 
+
 # Unified Inference Class
 class UnifiedInference:
-    def __init__(self, backend: Literal["ollama", "vllm"], model_name: str = ""):
+    def __init__(
+        self,
+        backend: Literal["ollama", "vllm"],
+        model_name: str = "",
+        adapters_repo: str = "",
+    ):
         self.backend = backend
         self.model_name = model_name
         self.engine = None
+        if adapters_repo != "":
+            from huggingface_hub import snapshot_download
+
+            self.adapters_path = snapshot_download(adapters_repo)
+        else:
+            self.adapters_path = None
         if self.backend == "vllm":
             with vllm_image.imports():
                 from vllm import LLM
@@ -263,17 +228,26 @@ class UnifiedInference:
                 sep="",
             )
             VOLUME_CONFIG["/pretrained"].reload()
+
             self.engine = LLM(
                 model=self.model_name,
+                # TODO: bring back
                 tensor_parallel_size=N_INFERENCE_GPUS,
                 pipeline_parallel_size=1,
                 gpu_memory_utilization=0.98,
                 block_size=128,
                 cpu_offload_gb=0,
-                max_model_len=128000,
+                max_model_len=64000,
                 max_num_seqs=8,
                 disable_custom_all_reduce=False,
                 enable_chunked_prefill=True,
+                # TODO: refactor
+                # tensor_parallel_size=1,
+                # pipeline_parallel_size=N_INFERENCE_GPUS,
+                quantization="bitsandbytes", 
+                enable_lora=True,
+                max_lora_rank=32,
+                qlora_adapter_name_or_path=self.adapters_path,
             )
             VOLUME_CONFIG["/pretrained"].commit()
         else:  # ollama
@@ -308,6 +282,7 @@ class UnifiedInference:
         if self.backend == "vllm":
             from vllm.sampling_params import SamplingParams
             from vllm.utils import random_uuid
+            from vllm.lora.request import LoRARequest
 
             sampling_params = SamplingParams(
                 repetition_penalty=1.1,
@@ -316,8 +291,14 @@ class UnifiedInference:
                 top_k=50,
                 max_tokens=1024,
             )
-            request_id = random_uuid()
-            outputs = self.engine.generate(prompt, sampling_params)
+            if self.adapters_path:
+                outputs = self.engine.generate(
+                    prompt,
+                    sampling_params,
+                    lora_request=LoRARequest("asap-lora", 1, self.adapters_path),
+                )
+            else:
+                outputs = self.engine.generate(prompt, sampling_params)
             full_response = outputs[0].outputs[0].text
             print(f"Full response: {full_response}")
             return full_response
@@ -346,39 +327,6 @@ class UnifiedInference:
 #     return inference_handle
 
 
-
-
-def get_examples(train_df, essay_set: int, num: int) -> str:
-    few_shot_examples = "Here are some examples of essays and their scores:\n"
-
-    for idx, row in enumerate(train_df[train_df["essay_set"] == str(essay_set)].itertuples()):
-        # print(idx, row, num)
-        if idx >= num:
-            break
-        few_shot_examples += f"""
-<example_essay>
-{row.essay_text}
-</example_essay>
-        """
-        if int(row.essay_set) == 2:
-            few_shot_examples += f"""
-<example_output>
-{{
-    "domain_1_score": {row.grader_score.split(" ")[0]},
-    "domain_2_score": {row.grader_score.split(" ")[1]}
-}}
-</example_output>
-            """
-        else:
-            few_shot_examples += f"""
-<example_output>
-{{
-    "domain_1_score": {row.grader_score}
-}}
-</example_output>
-            """
-    return few_shot_examples
-
 def inference_loop(
     run_folder: str,
     model_name: str,
@@ -388,6 +336,7 @@ def inference_loop(
     few_shot_n: int = 0,
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
+    adapters_repo: str = "",
 ):
     from datasets import load_dataset
     import time
@@ -398,8 +347,8 @@ def inference_loop(
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
     none_count = 0
 
-    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="validation")
-    
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="test")
+
     train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
     train_df = pd.DataFrame(train_dataset)
 
@@ -412,7 +361,9 @@ def inference_loop(
         df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
 
     # Initialize the inference engine
-    inference = UnifiedInference(backend=backend, model_name=model_name)
+    inference = UnifiedInference(
+        backend=backend, model_name=model_name, adapters_repo=adapters_repo
+    )
 
     for idx, grading_instruction in enumerate(eval_dataset):
         print("*" * 120)
@@ -426,27 +377,12 @@ def inference_loop(
 
         content: Optional[str] = None
         if remote_job:
-            system_prompt_formatted = system_prompt.format(
-                rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"],
-            )
-
-            essay_set_prompt_formatted = (
-                essay_set_2_essay_prompt.format(
-                    essay_text=grading_instruction["essay_text"]
+            if adapters_repo != "":
+                full_prompt = format_prompt_inference_ft(grading_instruction)
+            else:
+                full_prompt = format_prompt_inference_iter1(
+                    grading_instruction, few_shot_n, add_argument_annotation, train_df
                 )
-                if essay_set == 2
-                else essay_prompt.format(essay_text=grading_instruction["essay_text"])
-            )
-
-            full_prompt = system_prompt_formatted + "\n\n"
-            if few_shot_n > 0:
-                full_prompt += get_examples(train_df, essay_set=essay_set, num=few_shot_n) + "\n\n"
-            full_prompt += essay_set_prompt_formatted 
-            if add_argument_annotation:
-                full_prompt += "Here is an annotation of the essay's argument components to assist you in scoring:\n" + "<student_essay_argument_annotation>\n" + grading_instruction["argument_annotation"] + "\n</student_essay_argument_annotation>\n\n"
-            full_prompt += "<output>" + "\n" + "<explanation>"
-
             # Use the unified inference interface
             start_time = time.time()
             content = inference.generate(full_prompt)
@@ -457,7 +393,17 @@ def inference_loop(
                 df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]
             ).values[0]
 
-        out_str = "=" * 30 + f"Interaction {idx}" + "=" * 30 + "\nPrompt:\n" + full_prompt + "\n\n" + "Response:\n" + content + "\n\n"
+        out_str = (
+            "=" * 30
+            + f"Interaction {idx}"
+            + "=" * 30
+            + "\nPrompt:\n"
+            + full_prompt
+            + "\n\n"
+            + "Response:\n"
+            + content
+            + "\n\n"
+        )
         raw_outputs.write(out_str)
         print("=" * 80)
         print("Answer:")
@@ -505,14 +451,14 @@ def inference_loop(
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
                 output = {
                     "system_prompt": system_prompt,
-                    "essay_prompt": essay_prompt,
+                    "essay_prompt": essay_prompt_instruction,
                     "few_shot_n": few_shot_n,
                     "add_argument_annotation": add_argument_annotation,
-                    "essay_prompt_set_2": essay_set_2_essay_prompt,
+                    "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
                     "qwk_summary": compute_kappa_summary(ground_truths, results),
                     "predicted_labels": results,
                     "ground_truths": ground_truths,
-                    "avg_time_ms": float(np.average(times) / (10**6)),
+                    "avg_time_ms": float(np.average(times)),
                     "sample_size": idx,
                     "none_count": none_count,
                 }
@@ -525,14 +471,14 @@ def inference_loop(
     # Store data in a traceable format
     output = {
         "system_prompt": system_prompt,
-        "essay_prompt": essay_prompt,
+        "essay_prompt": essay_prompt_instruction,
         "few_shot_n": few_shot_n,
         "add_argument_annotation": add_argument_annotation,
-        "essay_prompt_set_2": essay_set_2_essay_prompt,
+        "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
         "qwk_summary": compute_kappa_summary(ground_truths, results),
         "predicted_labels": results,
         "ground_truths": ground_truths,
-        "avg_time_ms": float(np.average(times) / (10**6)),
+        "avg_time_ms": float(np.average(times)),
         "sample_size": n,
         "none_count": none_count,
     }
@@ -575,20 +521,46 @@ def inference_loop(
     volumes=VOLUME_CONFIG,
     gpu=INFERENCE_GPU_CONFIG,
 )
-def inference_vllm(model_handle: str, few_shot_n: int = 0, limit: Optional[int] = None, add_argument_annotation: bool = False):
+def inference_vllm(
+    model_handle: str,
+    few_shot_n: int = 0,
+    limit: Optional[int] = None,
+    add_argument_annotation: bool = False,
+    adapters_repo: str = "",
+):
     from datetime import datetime
 
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    run_name = (
-        f"vllm-{model_handle.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
-    )
+    run_name = f"vllm-{model_handle.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
     run_folder = f"/runs/{run_name}"
     os.makedirs(run_folder, exist_ok=True)
-    print( Colors.BLUE, Colors.BOLD, "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/" + run_name, Colors.END, sep="", )
+    print(
+        Colors.BLUE,
+        Colors.BOLD,
+        "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/"
+        + run_name,
+        Colors.END,
+        sep="",
+    )
     # VOLUME_CONFIG["/runs"].reload()
-    inference_loop(run_folder, model_name=model_handle, backend="vllm", few_shot_n=few_shot_n, limit=limit, add_argument_annotation=add_argument_annotation)
+    inference_loop(
+        run_folder,
+        model_name=model_handle,
+        backend="vllm",
+        few_shot_n=few_shot_n,
+        limit=limit,
+        add_argument_annotation=add_argument_annotation,
+        adapters_repo=adapters_repo,
+    )
     VOLUME_CONFIG["/runs"].commit()
-    print( Colors.GREEN, Colors.BOLD, "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/" + run_name, Colors.END, sep="", )
+    print(
+        Colors.GREEN,
+        Colors.BOLD,
+        "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/"
+        + run_name,
+        Colors.END,
+        sep="",
+    )
 
 
 """
@@ -598,18 +570,45 @@ Run using vllm handle:
 Deepseek With arguments:
     modal run --detach -m src.inference --model=deepseek-ai/DeepSeek-R1-Distill-Llama-8B --backend=vllm --shots=1 --arguments
     
-Run using ollama handle:x
+Run using lora adapters:
+    modal run --detach -m src.inference --model=llama-4bit --backend=vllm --adapters_repo=jjordanoc/llama31-ft-asap
+
+Run using ollama handle:
     modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
 """
 
 
 @inference_app.local_entrypoint()
-def inference_main(model: str, backend: str, shots: int = 0, limit: Optional[int] = None, arguments: bool = False):
+def inference_main(
+    model: str,
+    backend: str,
+    shots: int = 0,
+    limit: Optional[int] = None,
+    arguments: bool = False,
+    adapters_repo: str = "",
+):
     if backend == "ollama":
         # handle = inference_ollama.spawn(model)
         pass
     else:
-        handle = inference_vllm.spawn(model, few_shot_n=shots, limit=limit, add_argument_annotation=arguments)
+        if model in SUPPORTED_MODELS:
+            if adapters_repo == "":
+                print(
+                    f"{Colors.BOLD + Colors.RED}Need valid adapters repo for {model}{Colors.END}"
+                )
+                return
+            model = SUPPORTED_MODELS[model]
+            shots = 0
+            print(
+                f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
+            )
+        handle = inference_vllm.spawn(
+            model,
+            few_shot_n=shots,
+            limit=limit,
+            add_argument_annotation=arguments,
+            adapters_repo=adapters_repo,
+        )
     handle.get()
 
 

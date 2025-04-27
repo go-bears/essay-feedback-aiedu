@@ -1,6 +1,7 @@
 import os
 import pandas as pd
 
+
 def load_prompts_rubrics(prompts_path: str, rubrics_path: str) -> dict:
     """
     Loads text files from prompts and rubrics folders, and
@@ -24,12 +25,10 @@ def load_prompts_rubrics(prompts_path: str, rubrics_path: str) -> dict:
         with open(os.path.join(rubrics_path, rubrics[i - 1]), "r") as f:
             rubric = f.read()
 
-        prompt_rubric_map[i] = {
-            "prompt": prompt,
-            "rubric": rubric
-        }
+        prompt_rubric_map[i] = {"prompt": prompt, "rubric": rubric}
 
     return prompt_rubric_map
+
 
 system_prompt = f"""
 You are a helpful essay assessement assistant that scores essays based on a rubric. Please provide a 

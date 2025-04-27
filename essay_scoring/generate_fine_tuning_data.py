@@ -11,7 +11,7 @@ def main(args):
     # Read the train IDs (should contain at least an 'essay_id' column)
     train_ids_df = pd.read_csv(args.train_ids_csv)
     val_ids_df = pd.read_csv(args.val_ids_csv)
-
+    test_ids_df = pd.read_csv(args.test_ids_csv)
     # Read the full training set (TSV file)
     df = pd.read_csv(args.training_set_tsv, sep="\t", encoding="ISO-8859-1")
     argument_annotation_df = pd.read_csv(args.argument_annotation_tsv, sep="\t", encoding="ISO-8859-1")
@@ -22,12 +22,11 @@ def main(args):
     # Filter the full dataset to keep only rows whose essay_id is in train_ids.csv
     train_df = df[df['essay_id'].isin(train_ids_df['essay_id'])]
     val_df = df[df['essay_id'].isin(val_ids_df['essay_id'])]
+    test_df = df[df['essay_id'].isin(test_ids_df['essay_id'])]
 
-    # Render the system prompt once from annotate.system.mustache
-    # system_prompt = _get_templated("annotate.system")
 
-    for split, current_outfile, current_df in zip(["train", "validation"],
-                                                  [args.output_train_jsonl, args.output_val_jsonl], [train_df, val_df]):
+    for split, current_outfile, current_df in zip(["train", "validation", "test"],
+                                                  [args.output_train_jsonl, args.output_val_jsonl, args.output_test_jsonl], [train_df, val_df, test_df]):
         # Open the output jsonl file for writing
         with open(current_outfile, "w") as out_f:
             # Iterate over each matching essay row
@@ -52,28 +51,6 @@ def main(args):
                 with open(rubric_path, "r") as f:
                     rubric = f.read()
 
-                # Determine the output_format based on essay_id
-                if essay_set == 2:
-                    output_format = args.output_format_special
-                else:
-                    output_format = args.output_format_default
-
-                # # Render the message template using annotate.message.mustache
-                # rendered_message = _get_templated(
-                #     "annotate.message",
-                #     essay_id=int(essay_id),
-                #     prompt_information=prompt_information,
-                #     essay=essay_text,
-                #     rubric=rubric,
-                #     output_format=output_format
-                # )
-
-                # Build the JSON object for this essay.
-                # data = {
-                #     "instruction": system_prompt,
-                #     "input": rendered_message,
-                #     "output" : f"{domain1_score}" if essay_set != 2 else f"{domain1_score} {domain2_score}"
-                # }
                 data = {
                     "essay_id": essay_id,
                     "essay_prompt": prompt_information,
@@ -110,5 +87,9 @@ if __name__ == "__main__":
                         help="Output format for essay_set == 2")
     parser.add_argument("--argument_annotation_tsv", default="../essay_argument_annotation/asap_aes_data_segmented.tsv",
                         help="Path to the argument annotation TSV file")
+    parser.add_argument("--test_ids_csv", default="asap-aes/train-test-val-split/test_ids.csv",
+                        help="Path to the CSV file with test essay IDs")
+    parser.add_argument("--output_test_jsonl", default="test.jsonl",
+                        help="Path for the output JSONL file")
     args = parser.parse_args()
     main(args)

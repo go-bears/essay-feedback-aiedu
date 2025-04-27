@@ -3,13 +3,17 @@
 ###
 
 base_model: meta-llama/Llama-3.1-8B-Instruct
-sequence_len: 32768
+sequence_len: 64000
 
 # base model weight quantization
 load_in_8bit: true
 
 # attention implementation
 flash_attention: true
+
+push_dataset_to_hub: jjordanoc/llama-3-8b-asap-ft
+
+hub_model_id: jjordanoc/llama-3-8b-asap-ft
 
 # finetuned adapter config
 adapter: lora

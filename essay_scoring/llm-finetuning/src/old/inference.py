@@ -22,6 +22,7 @@ with vllm_image.imports():
     from vllm.utils import random_uuid
     import yaml
 
+
 @app.cls(
     gpu=INFERENCE_GPU_CONFIG,
     image=vllm_image,
