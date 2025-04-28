@@ -5,8 +5,8 @@ from typing import Union
 import modal
 
 SUPPORTED_MODELS = {
-    "llama-31-8b-it" : "unsloth/Meta-Llama-3.1-8B-Instruct",
-    "deepseek-r1-distill-llama-8b" : "unsloth/DeepSeek-R1-Distill-Llama-8B"
+    "llama-31-8b-it": "unsloth/Meta-Llama-3.1-8B-Instruct",
+    "deepseek-r1-distill-llama-8b": "unsloth/DeepSeek-R1-Distill-Llama-8B",
 }
 
 APP_NAME = "ft-gemma-3"
@@ -143,12 +143,13 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 ### Response:
 {}"""
 
+
 def format_prompt_training(grading_instruction, eos_token):
     essay_set = int(grading_instruction["essay_set"])
     system_prompt_formatted = system_prompt.format(
-                rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"],
-            )
+        rubric=grading_instruction["rubric"],
+        prompt=grading_instruction["essay_prompt"],
+    )
 
     essay_set_prompt_formatted = (
         essay_set_2_essay_prompt_instruction
@@ -158,7 +159,7 @@ def format_prompt_training(grading_instruction, eos_token):
     output_formatted = (
         output_prompt_set_2.format(
             domain_1_score=grading_instruction["grader_score"].split(" ")[0],
-            domain_2_score=grading_instruction["grader_score"].split(" ")[1]
+            domain_2_score=grading_instruction["grader_score"].split(" ")[1],
         )
         if essay_set == 2
         else output_prompt.format(domain_1_score=grading_instruction["grader_score"])
@@ -168,13 +169,17 @@ def format_prompt_training(grading_instruction, eos_token):
     outputs = output_formatted
     # Must add EOS_TOKEN, otherwise your generation will go on forever!
     text = alpaca_prompt.format(instructions, inputs, outputs) + eos_token
-    return { "text" : text, }
+    return {
+        "text": text,
+    }
 
 
 def get_few_shot_examples(train_df, essay_set: int, num: int) -> str:
     few_shot_examples = "Here are some examples of essays and their scores:\n"
 
-    for idx, row in enumerate(train_df[train_df["essay_set"] == str(essay_set)].itertuples()):
+    for idx, row in enumerate(
+        train_df[train_df["essay_set"] == str(essay_set)].itertuples()
+    ):
         # print(idx, row, num)
         if idx >= num:
             break
@@ -202,26 +207,39 @@ def get_few_shot_examples(train_df, essay_set: int, num: int) -> str:
             """
     return few_shot_examples
 
-def format_prompt_inference_iter1(grading_instruction, few_shot_n: int, add_argument_annotation: bool, train_df):
+
+def format_prompt_inference_iter1(
+    grading_instruction, few_shot_n: int, add_argument_annotation: bool, train_df
+):
     essay_set = int(grading_instruction["essay_set"])
     system_prompt_formatted = system_prompt.format(
-                rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"],
-            )
+        rubric=grading_instruction["rubric"],
+        prompt=grading_instruction["essay_prompt"],
+    )
 
     essay_set_prompt_formatted = (
         essay_set_2_essay_prompt_instruction.format(
             essay_text=grading_instruction["essay_text"]
         )
         if essay_set == 2
-        else essay_prompt_instruction.format(essay_text=grading_instruction["essay_text"])
+        else essay_prompt_instruction.format(
+            essay_text=grading_instruction["essay_text"]
+        )
     )
     full_prompt = system_prompt_formatted + "\n\n"
     if few_shot_n > 0:
-        full_prompt += get_few_shot_examples(train_df, essay_set=essay_set, num=few_shot_n) + "\n\n"
-    full_prompt += essay_set_prompt_formatted 
+        full_prompt += (
+            get_few_shot_examples(train_df, essay_set=essay_set, num=few_shot_n)
+            + "\n\n"
+        )
+    full_prompt += essay_set_prompt_formatted
     if add_argument_annotation:
-        full_prompt += "Here is an annotation of the essay's argument components to assist you in scoring:\n" + "<student_essay_argument_annotation>\n" + grading_instruction["argument_annotation"] + "\n</student_essay_argument_annotation>\n\n"
+        full_prompt += (
+            "Here is an annotation of the essay's argument components to assist you in scoring:\n"
+            + "<student_essay_argument_annotation>\n"
+            + grading_instruction["argument_annotation"]
+            + "\n</student_essay_argument_annotation>\n\n"
+        )
     full_prompt += "<output>" + "\n" + "<explanation>"
 
     return full_prompt
@@ -230,9 +248,9 @@ def format_prompt_inference_iter1(grading_instruction, few_shot_n: int, add_argu
 def format_prompt_inference_ft(grading_instruction):
     essay_set = int(grading_instruction["essay_set"])
     system_prompt_formatted = system_prompt.format(
-                rubric=grading_instruction["rubric"],
-                prompt=grading_instruction["essay_prompt"],
-            )
+        rubric=grading_instruction["rubric"],
+        prompt=grading_instruction["essay_prompt"],
+    )
 
     essay_set_prompt_formatted = (
         essay_set_2_essay_prompt_instruction
@@ -241,7 +259,7 @@ def format_prompt_inference_ft(grading_instruction):
     )
     instructions = system_prompt_formatted + "\n" + essay_set_prompt_formatted
     inputs = grading_instruction["essay_text"]
-    outputs = "" # for inference, we don't have outputs
+    outputs = ""  # for inference, we don't have outputs
     # Must add EOS_TOKEN, otherwise your generation will go on forever!
     return alpaca_prompt.format(instructions, inputs, outputs)
 

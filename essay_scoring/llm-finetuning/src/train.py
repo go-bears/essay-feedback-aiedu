@@ -84,7 +84,9 @@ def model_setup(model_handle: str):
 def dataset_setup(tokenizer):
     EOS_TOKEN = tokenizer.eos_token  # Must add EOS_TOKEN
 
-    formatting_fun = lambda grading_instruction: format_prompt_training(grading_instruction, EOS_TOKEN)
+    formatting_fun = lambda grading_instruction: format_prompt_training(
+        grading_instruction, EOS_TOKEN
+    )
 
     from datasets import load_dataset
 
@@ -122,17 +124,17 @@ def train_loop(
         args=TrainingArguments(
             # Checkpoint in hub
             push_to_hub=True,
-            per_device_eval_batch_size=1,   # ← minimize this
+            per_device_eval_batch_size=1,  # ← minimize this
             eval_accumulation_steps=4,
             hub_model_id=model_name,
             save_strategy="epoch",
             # save_strategy="steps",
             warmup_steps=5,
-            num_train_epochs = 2,
+            num_train_epochs=2,
             # max_steps=10,
             do_eval=True,
             learning_rate=2e-4,
-            eval_strategy="steps", # maybe not the best?
+            eval_strategy="steps",  # maybe not the best?
             eval_steps=50,
             # eval_steps=150,
             fp16=not is_bfloat16_supported(),

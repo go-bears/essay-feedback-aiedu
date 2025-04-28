@@ -172,10 +172,8 @@ vllm_image = (
     .pip_install(
         "vllm==0.8.2",
         "torch==2.6.0",
-        # "transformers==4.50.3",
         "modal",
         "huggingface_hub[hf_transfer]==0.30.1",
-        # "fastapi==0.110.0",
         "pydantic",
         "transformers==4.51.0",
         "datasets",
@@ -244,7 +242,7 @@ class UnifiedInference:
                 # TODO: refactor
                 # tensor_parallel_size=1,
                 # pipeline_parallel_size=N_INFERENCE_GPUS,
-                quantization="bitsandbytes", 
+                quantization="bitsandbytes",
                 enable_lora=True,
                 max_lora_rank=32,
                 qlora_adapter_name_or_path=self.adapters_path,
@@ -311,28 +309,11 @@ class UnifiedInference:
             )
             return response.json()["response"]
 
-    # @modal.exit()
-    # def cleanup(self):
-    #     if self.backend == "vllm" and N_INFERENCE_GPUS > 1:
-    #         import ray
-    #         ray.shutdown()
-    #         if hasattr(self.engine, '_background_loop_unshielded'):
-    #             self.engine._background_loop_unshielded.cancel()
-
-
-# @inference_app.function(image=ollama_image, timeout=60 * MINUTES, volumes=VOLUME_CONFIG)
-# def setup_job(model_handle: str):
-#
-#     inference_handle = inference_job.spawn(model_handle, run_folder)
-#     return inference_handle
-
 
 def inference_loop(
     run_folder: str,
     model_name: str,
     backend: Literal["ollama", "vllm"] = "ollama",
-    remote_job: bool = True,
-    local_dataset_path: str = "",
     few_shot_n: int = 0,
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
@@ -348,17 +329,11 @@ def inference_loop(
     none_count = 0
 
     eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="test")
-
     train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
     train_df = pd.DataFrame(train_dataset)
 
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
-
-    if not remote_job:
-        import pandas as pd
-
-        df = pd.read_csv(local_dataset_path, sep="\t", encoding="ISO-8859-1", dtype=str)
 
     # Initialize the inference engine
     inference = UnifiedInference(
@@ -369,29 +344,20 @@ def inference_loop(
         print("*" * 120)
         print("Processing essay", idx)
         print("=" * 80)
-        # print("Prompt:")
-        # print(grading_instruction)
 
         essay_set = int(grading_instruction["essay_set"])
-        essay_id = grading_instruction["essay_id"]
 
-        content: Optional[str] = None
-        if remote_job:
-            if adapters_repo != "":
-                full_prompt = format_prompt_inference_ft(grading_instruction)
-            else:
-                full_prompt = format_prompt_inference_iter1(
-                    grading_instruction, few_shot_n, add_argument_annotation, train_df
-                )
-            # Use the unified inference interface
-            start_time = time.time()
-            content = inference.generate(full_prompt)
-            times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
+        if adapters_repo != "":
+            full_prompt = format_prompt_inference_ft(grading_instruction)
         else:
-            full_prompt = ""
-            content = (
-                df[df["essay_id"] == (grading_instruction["essay_id"])]["comments"]
-            ).values[0]
+            full_prompt = format_prompt_inference_iter1(
+                grading_instruction, few_shot_n, add_argument_annotation, train_df
+            )
+        
+        # Use the unified inference interface
+        start_time = time.time()
+        content = inference.generate(full_prompt)
+        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
 
         out_str = (
             "=" * 30
@@ -404,7 +370,10 @@ def inference_loop(
             + content
             + "\n\n"
         )
+
+        # Log the output
         raw_outputs.write(out_str)
+
         print("=" * 80)
         print("Answer:")
 
@@ -447,7 +416,7 @@ def inference_loop(
         print("*" * 120)
 
         # Periodic writes
-        if idx % 100 == 0 and remote_job:
+        if idx % 100 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
                 output = {
                     "system_prompt": system_prompt,
@@ -542,7 +511,6 @@ def inference_vllm(
         Colors.END,
         sep="",
     )
-    # VOLUME_CONFIG["/runs"].reload()
     inference_loop(
         run_folder,
         model_name=model_handle,
@@ -563,21 +531,6 @@ def inference_vllm(
     )
 
 
-"""
-Run using vllm handle:
-    modal run --detach -m src.inference --model=google/gemma-3-12b-it --backend=vllm --shots=1 --arguments 
-
-Deepseek With arguments:
-    modal run --detach -m src.inference --model=deepseek-ai/DeepSeek-R1-Distill-Llama-8B --backend=vllm --shots=1 --arguments
-    
-Run using lora adapters:
-    modal run --detach -m src.inference --model=llama-4bit --backend=vllm --adapters_repo=jjordanoc/llama31-ft-asap
-
-Run using ollama handle:
-    modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
-"""
-
-
 @inference_app.local_entrypoint()
 def inference_main(
     model: str,
@@ -587,6 +540,19 @@ def inference_main(
     arguments: bool = False,
     adapters_repo: str = "",
 ):
+    """
+    Run using vllm handle:
+        modal run --detach -m src.inference --model=google/gemma-3-12b-it --backend=vllm --shots=1 --arguments
+
+    Deepseek With arguments:
+        modal run --detach -m src.inference --model=deepseek-ai/DeepSeek-R1-Distill-Llama-8B --backend=vllm --shots=1 --arguments
+
+    Run using lora adapters:
+        modal run --detach -m src.inference --model=llama-4bit --backend=vllm --adapters_repo=jjordanoc/llama31-ft-asap
+
+    Run using ollama handle:
+        modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
+    """
     if backend == "ollama":
         # handle = inference_ollama.spawn(model)
         pass
@@ -610,16 +576,3 @@ def inference_main(
             adapters_repo=adapters_repo,
         )
     handle.get()
-
-
-def local_main():
-    run_folder = "../local_runs"
-    inference_loop(
-        run_folder,
-        remote_job=False,
-        local_dataset_path="/Users/joaquin/Desktop/ai_education/essay-feedback-aiedu/essay_scoring/final_llama3.2-scoring-output-2025-04-09-12-19.tsv",
-    )
-
-
-if __name__ == "__main__":
-    local_main()
