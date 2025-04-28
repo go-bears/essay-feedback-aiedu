@@ -26,6 +26,21 @@ dtype = (
 load_in_4bit = True  # Use 4bit quantization to reduce memory usage. Can be False.
 
 
+def run_cmd(cmd: str, run_folder: str):
+    """Run a command inside a folder, with Modal Volume reloading before and commit on success."""
+    import subprocess
+
+    # Ensure volumes contain latest files.
+    VOLUME_CONFIG["/pretrained"].reload()
+    VOLUME_CONFIG["/runs"].reload()
+
+    # Propagate errors from subprocess.
+    if exit_code := subprocess.call(cmd.split(), cwd=run_folder):
+        exit(exit_code)
+
+    # Commit writes to volume.
+    VOLUME_CONFIG["/runs"].commit()
+
 def model_setup(model_handle: str):
     from unsloth import FastLanguageModel, FastModel
     import torch
@@ -99,14 +114,20 @@ def dataset_setup(tokenizer):
 
 
 def train_loop(
-    model_name: str, model, tokenizer, train_dataset, eval_dataset, max_seq_length: int
-):
+    model_handle: str, fine_tuned_model_handle: str,
+) -> None:
+    import numpy as np
     from trl import SFTTrainer
     from transformers import TrainingArguments
     from unsloth import is_bfloat16_supported
     import wandb
     import os
+    np.float_ = np.float64
 
+    model, tokenizer = model_setup(model_handle)
+    train_dataset, eval_dataset = dataset_setup(tokenizer)
+    print(f"{Colors.BLUE + Colors.BOLD}Setup model and datasets{Colors.END}")
+    
     wandb.init(project="asap-ft")
     os.environ["WANDB_LOG_MODEL"] = "checkpoint"  # log all model checkpoints
 
@@ -124,7 +145,7 @@ def train_loop(
             push_to_hub=True,
             per_device_eval_batch_size=1,   # ← minimize this
             eval_accumulation_steps=4,
-            hub_model_id=model_name,
+            hub_model_id=fine_tuned_model_handle,
             save_strategy="epoch",
             # save_strategy="steps",
             warmup_steps=5,
@@ -147,7 +168,9 @@ def train_loop(
     )
     trainer_stats = trainer.train()
     print(trainer_stats)
-    return model, trainer
+    print(
+        f"{Colors.GREEN + Colors.BOLD}Adapters pushed to hub as {fine_tuned_model_handle}{Colors.END}"
+    )
 
 
 @app.function(
@@ -156,44 +179,41 @@ def train_loop(
     volumes=VOLUME_CONFIG,
     timeout=24 * HOURS,
 )
-def train_unsloth(run_folder: str, model_handle: str, output_model_name: str):
-    import numpy as np
-
-    np.float_ = np.float64
-
-    model, tokenizer = model_setup(model_handle)
-    train_dataset, eval_dataset = dataset_setup(tokenizer)
-    print(f"{Colors.BLUE + Colors.BOLD}Setup model and datasets{Colors.END}")
-    model, trainer = train_loop(
-        output_model_name, model, tokenizer, train_dataset, eval_dataset, max_seq_length
-    )
-    print(
-        f"{Colors.GREEN + Colors.BOLD}Adapters pushed to hub as {output_model_name}{Colors.END}"
-    )
+def train_unsloth(run_folder: str, model_handle: str, fine_tuned_model_handle: str):
+    cmd = [
+        "accelerate", 
+        "launch",
+        "--config_file", "/mnt/code/accelerate_config.yaml",
+        "train.py",
+        model_handle, 
+        fine_tuned_model_handle,
+    ]
+    # This will spin up 2 processes under DDP, bf16, ZeRO‐2
+    run_cmd(cmd, run_folder)
 
     # # Push adapters to hub
-    # model.push_to_hub(f"jjordanoc/{output_model_name}")
-    # tokenizer.push_to_hub(f"jjordanoc/{output_model_name}")
+    # model.push_to_hub(f"jjordanoc/{fine_tuned_model_handle}")
+    # tokenizer.push_to_hub(f"jjordanoc/{fine_tuned_model_handle}")
 
     # # Local save to then load
-    # model.save_pretrained(output_model_name)
-    # tokenizer.save_pretrained(output_model_name)
+    # model.save_pretrained(fine_tuned_model_handle)
+    # tokenizer.save_pretrained(fine_tuned_model_handle)
 
     # # Load model from adapters
     # from unsloth import FastLanguageModel
     # model, tokenizer = FastLanguageModel.from_pretrained(
-    #     model_name = output_model_name, # YOUR MODEL YOU USED FOR TRAINING
+    #     model_name = fine_tuned_model_handle, # YOUR MODEL YOU USED FOR TRAINING
     #     max_seq_length = max_seq_length,
     #     dtype = dtype,
     #     load_in_4bit = load_in_4bit,
     # )
     # FastLanguageModel.for_inference(model) # Enable native 2x faster inference
 
-    # model.push_to_hub_gguf(output_model_name, tokenizer, quantization_method = "q4_k_m")
+    # model.push_to_hub_gguf(fine_tuned_model_handle, tokenizer, quantization_method = "q4_k_m")
 
 
 @app.function(image=axolotl_image, timeout=30 * MINUTES, volumes=VOLUME_CONFIG)
-def launch_unsloth(model_handle: str, output_model_name: str):
+def launch_unsloth(model_handle: str, fine_tuned_model_handle: str):
     from huggingface_hub import snapshot_download
 
     try:
@@ -214,7 +234,7 @@ def launch_unsloth(model_handle: str, output_model_name: str):
 
     # Start training run.
     print(f"Spawning container for training {run_folder}.")
-    train_handle = train_unsloth.spawn(run_folder, model_handle, output_model_name)
+    train_handle = train_unsloth.spawn(run_folder, model_handle, fine_tuned_model_handle)
 
     with open(f"{run_folder}/logs.txt", "w") as f:
         lbl = "train"
