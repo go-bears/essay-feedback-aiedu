@@ -4,7 +4,7 @@ import re
 import re
 import secrets
 from collections import defaultdict
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 
 import modal
 import numpy as np
@@ -17,14 +17,12 @@ from .common import (
     SUPPORTED_MODELS,
     format_prompt_inference_iter1,
     format_prompt_inference_ft,
-    system_prompt,
-    essay_prompt_instruction,
-    essay_set_2_essay_prompt_instruction,
-    output_prompt,
-    output_prompt_set_2,
+    GREGeneralGraderPrompts,
+    GREArgumentativeAgentPrompts,
+    format_prompt_inference_gre,
 )
 
-INFERENCE_GPU_CONFIG = "A100-80GB:1"
+INFERENCE_GPU_CONFIG = "A100:1"
 
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
@@ -35,6 +33,7 @@ else:
 N_CLASSES = 6
 
 ASAPResults = dict[int, list[tuple[int, int]]]
+GREResults = list[int]
 
 
 def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
@@ -66,6 +65,39 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     results["avg"] = avg_qwk
     return results
 
+
+def try_extract_key(key: str, text: str) -> Optional[str]:
+    # Step 1: Find JSON objects in the string
+    # This pattern looks for text that starts with { and ends with }
+    json_pattern = r"{(?:[^{}]|(?:{[^{}]*}))*}"
+
+    domain_score_pattern = rf'(?:"{key}"|\'{key}\'|""{key}"")\s*:\s*([0-9.]+)'
+
+    # Find all potential JSON objects
+    json_matches = re.findall(json_pattern, text)
+
+    for potential_json in json_matches:
+        try:
+            # Alternative: use regex to extract the value
+            match = re.search(domain_score_pattern, potential_json)
+            if match:
+                try:
+                    return str(match.group(1))
+                except Exception as e:
+                    pass
+
+            # Try to parse as JSON to validate
+            json_obj = json.loads(potential_json)
+            # Check if our key exists directly
+            if key in json_obj:
+                return str(json_obj[key])
+
+        except Exception as e:
+            # Not valid JSON, continue to next match
+            # print("Error extracting domain score")
+            # print(e)
+            continue
+    return None
 
 def extract_domain_score(text: str, domain: int) -> Optional[int]:
     # Step 1: Find JSON objects in the string
@@ -283,6 +315,7 @@ class UnifiedInference:
             from vllm.lora.request import LoRARequest
 
             sampling_params = SamplingParams(
+                seed=903,
                 repetition_penalty=1.1,
                 temperature=0.2,
                 top_p=0.95,
@@ -308,7 +341,45 @@ class UnifiedInference:
                 json={"model": self.model_name, "prompt": prompt, "stream": False},
             )
             return response.json()["response"]
+        
 
+def prompt_processing_asap(content: str, essay_set: int):
+    # try:
+    #     score_1 = extract_domain_score(content, 1)
+    #     score_2 = -1
+    #     print(score_1)
+
+    #     if essay_set == 2:
+    #         score_2 = extract_domain_score(content, 2)
+    #         print(score_2)
+    #     score = (score_1, score_2)
+    # except Exception as e:
+    #     # skip this essay
+    #     print(e)
+    #     return None
+
+    # # Discard from analysis
+    # if score_1 is None or score_2 is None:
+    #     none_count += 1
+    #     return None
+
+    # grader_score_1 = -1
+    # grader_score_2 = -1
+    # if essay_set == 2:
+    #     split = grading_instruction["grader_score"].split(" ")
+    #     grader_score_1 = int(split[0])
+    #     grader_score_2 = int(split[1])
+    # else:
+    #     grader_score_1 = int(grading_instruction["grader_score"])
+    # grader_score = (grader_score_1, grader_score_2)
+
+    # if essay_set not in results:
+    #     results[essay_set] = [score]
+    #     ground_truths[essay_set] = [grader_score]
+    # else:
+    #     results[essay_set].append(score)
+    #     ground_truths[essay_set].append(grader_score)
+    pass
 
 def inference_loop(
     run_folder: str,
@@ -322,15 +393,18 @@ def inference_loop(
     from datasets import load_dataset
     import time
     import pandas as pd
+    from sklearn.metrics import cohen_kappa_score
 
-    results: ASAPResults = {}
-    ground_truths: ASAPResults = {}
+    agent_prompts = GREArgumentativeAgentPrompts
+    results: GREResults = []
+    ground_truths: GREResults = []
+    feedbacks: list[str] = []
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
     none_count = 0
 
-    eval_dataset = load_dataset("jjordanoc/argumentative-asap", split="test")
-    train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
-    train_df = pd.DataFrame(train_dataset)
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
+    # train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
+    # train_df = pd.DataFrame(train_dataset)
 
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
@@ -341,18 +415,20 @@ def inference_loop(
     )
 
     for idx, grading_instruction in enumerate(eval_dataset):
+        print(grading_instruction, type(grading_instruction))
         print("*" * 120)
         print("Processing essay", idx)
         print("=" * 80)
 
-        essay_set = int(grading_instruction["essay_set"])
+        # essay_set = int(grading_instruction["essay_set"])
 
         if adapters_repo != "":
             full_prompt = format_prompt_inference_ft(grading_instruction)
         else:
-            full_prompt = format_prompt_inference_iter1(
-                grading_instruction, few_shot_n, add_argument_annotation, train_df
-            )
+            # full_prompt = format_prompt_inference_iter1(
+            #     grading_instruction, few_shot_n, add_argument_annotation, train_df
+            # )
+            full_prompt = agent_prompts.format_prompt_inference(grading_instruction)
         
         # Use the unified inference interface
         start_time = time.time()
@@ -374,57 +450,26 @@ def inference_loop(
         # Log the output
         raw_outputs.write(out_str)
 
-        print("=" * 80)
-        print("Answer:")
-
-        try:
-            score_1 = extract_domain_score(content, 1)
-            score_2 = -1
-            print(score_1)
-
-            if essay_set == 2:
-                score_2 = extract_domain_score(content, 2)
-                print(score_2)
-            score = (score_1, score_2)
-        except Exception as e:
-            # skip this essay
-            print(e)
+        # Prompt processing
+        score = try_extract_key("score", content)
+        feedback = try_extract_key("feedback", content)
+        if score is None:
             continue
-
-        # Discard from analysis
-        if score_1 is None or score_2 is None:
-            none_count += 1
-            continue
-
-        grader_score_1 = -1
-        grader_score_2 = -1
-        if essay_set == 2:
-            split = grading_instruction["grader_score"].split(" ")
-            grader_score_1 = int(split[0])
-            grader_score_2 = int(split[1])
-        else:
-            grader_score_1 = int(grading_instruction["grader_score"])
-        grader_score = (grader_score_1, grader_score_2)
-
-        if essay_set not in results:
-            results[essay_set] = [score]
-            ground_truths[essay_set] = [grader_score]
-        else:
-            results[essay_set].append(score)
-            ground_truths[essay_set].append(grader_score)
-
-        print("*" * 120)
+        feedbacks.append(feedback)
+        results.append(int(score))
+        ground_truths.append(int(grading_instruction["score"]))
 
         # Periodic writes
-        if idx % 100 == 0:
+        if idx % 10 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
                 output = {
-                    "system_prompt": system_prompt,
-                    "essay_prompt": essay_prompt_instruction,
-                    "few_shot_n": few_shot_n,
-                    "add_argument_annotation": add_argument_annotation,
-                    "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
-                    "qwk_summary": compute_kappa_summary(ground_truths, results),
+                    "system_prompt": agent_prompts.system_prompt,
+                    "input_prompt": agent_prompts.input_prompt,
+                    # "feedbacks": feedbacks,
+                    # "few_shot_n": few_shot_n,
+                    # "add_argument_annotation": add_argument_annotation,
+                    # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
+                    "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
                     "predicted_labels": results,
                     "ground_truths": ground_truths,
                     "avg_time_ms": float(np.average(times)),
@@ -439,16 +484,17 @@ def inference_loop(
 
     # Store data in a traceable format
     output = {
-        "system_prompt": system_prompt,
-        "essay_prompt": essay_prompt_instruction,
-        "few_shot_n": few_shot_n,
-        "add_argument_annotation": add_argument_annotation,
-        "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
-        "qwk_summary": compute_kappa_summary(ground_truths, results),
+        "system_prompt": agent_prompts.system_prompt,
+        "input_prompt": agent_prompts.input_prompt,
+        "feedbacks": feedbacks,
+        # "few_shot_n": few_shot_n,
+        # "add_argument_annotation": add_argument_annotation,
+        # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
+        "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
         "predicted_labels": results,
         "ground_truths": ground_truths,
         "avg_time_ms": float(np.average(times)),
-        "sample_size": n,
+        "sample_size": idx,
         "none_count": none_count,
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
@@ -456,6 +502,7 @@ def inference_loop(
     outfile.close()
     raw_outputs.close()
     tmp_outs.close()
+    VOLUME_CONFIG["/runs"].commit()
 
 
 # @inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
@@ -533,8 +580,8 @@ def inference_vllm(
 
 @inference_app.local_entrypoint()
 def inference_main(
-    model: str,
     backend: str,
+    model: str = "",
     shots: int = 0,
     limit: Optional[int] = None,
     arguments: bool = False,
@@ -552,6 +599,9 @@ def inference_main(
 
     Run using ollama handle:
         modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
+
+    Run using multiple models:
+        modal run --detach -m src.inference --backend=vllm
     """
     if backend == "ollama":
         # handle = inference_ollama.spawn(model)
@@ -568,11 +618,22 @@ def inference_main(
             print(
                 f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
             )
-        handle = inference_vllm.spawn(
-            model,
-            few_shot_n=shots,
-            limit=limit,
-            add_argument_annotation=arguments,
-            adapters_repo=adapters_repo,
-        )
-    handle.get()
+        if model == "":
+            gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "google/gemma-3-27b-it"]
+            for gre_model in gre_models_small:
+                inference_vllm.spawn(
+                    gre_model,
+                    few_shot_n=shots,   
+                    limit=limit,
+                    add_argument_annotation=arguments,
+                    adapters_repo=adapters_repo,
+                )
+        else:
+            handle = inference_vllm.spawn(
+                model,
+                few_shot_n=shots,
+                limit=limit,
+                add_argument_annotation=arguments,
+                adapters_repo=adapters_repo,
+            )
+            handle.get()

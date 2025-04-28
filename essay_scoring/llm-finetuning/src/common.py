@@ -71,66 +71,203 @@ VOLUME_CONFIG: dict[Union[str, PurePosixPath], modal.Volume] = {
     "/runs": runs_volume,
 }
 
-system_prompt = """
+class GREGeneralGraderPrompts:
+    system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
 Please provide a numerical score for the provided essay according to the specified rubric.
 
-- The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
 - Provide an appropriate holistic score for limited timed test conditions where there is little to no time for revision.
 - You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
-
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve their essay.
 
 The rubric or rubrics for this essay is as follows:
 <rubric>
-{rubric}
+Score 6
+In addressing the specific task directions, a
+6 response presents a cogent, well­articulated
+analysis of the issue and conveys meaning skillfully.
+A typical response in this category exhibits the
+following characteristics:
+1. It articulates a clear and insightful position on
+the issue in accordance with the assigned task.
+2. It develops the position fully, with compelling
+reasons and/or persuasive examples.
+3. It sustains a well­focused, well­organized
+analysis, connecting ideas logically.
+4. It conveys ideas fluently and precisely, using
+effective vocabulary and sentence variety.
+5. It demonstrates superior facility with the
+conventions of standard written English
+(i.e., grammar, usage, and mechanics) but
+may have minor errors.
+
+Score 5
+In addressing the specific task directions, a
+5 response presents a generally thoughtful,
+well­developed analysis of the issue and conveys
+meaning clearly.
+A typical response in this category exhibits the
+following characteristics:
+1. It presents a clear and well­considered position
+on the issue in accordance with the assigned
+task.
+2. It develops the position with logically sound
+reasons and/or well­chosen examples.
+3. It is focused and generally well organized,
+connecting ideas appropriately.
+4. It conveys ideas clearly and well, using
+appropriate vocabulary and sentence variety.
+5. It demonstrates facility with the conventions of
+standard written English but may have minor
+errors.
+
+Score 4
+In addressing the specific task directions, a
+4 response presents a competent analysis of the issue
+and conveys meaning with acceptable clarity.
+A typical response in this category exhibits the
+following characteristics:
+1. It presents a clear position on the issue in
+accordance with the assigned task.
+2. It develops the position with relevant reasons
+and/or examples.
+3. It is adequately focused and organized.
+4. It demonstrates sufficient control of language
+to express ideas with acceptable clarity.
+5. It generally demonstrates control of the
+conventions of standard written English but
+may have some errors.
+
+Score 3
+A 3 response demonstrates some competence in
+addressing the specific task directions, in analyzing
+the issue, and in conveying meaning but is obviously
+flawed.
+A typical response in this category exhibits ONE OR
+MORE of the following characteristics:
+1. It is vague or limited in addressing the specific
+task directions and/or in presenting or
+developing a position on the issue.
+2. It is weak in the use of relevant reasons or
+examples, or relies largely on unsupported
+claims.
+3. It is limited in focus and/or organization.
+4. It has problems in language and sentence
+structure that result in a lack of clarity.
+5. It contains occasional major errors or frequent
+minor errors in grammar, usage, or mechanics
+that can interfere with meaning.
+
+Score 2
+A 2 response largely disregards the specific task
+directions and/or demonstrates serious weaknesses in
+analytical writing.
+A typical response in this category exhibits ONE OR
+MORE of the following characteristics:
+1. It is unclear or seriously limited in addressing
+the specific task directions and/or in presenting
+or developing a position on the issue.
+2. It provides few, if any, relevant reasons or
+examples in support of its claims.
+3. It is poorly focused and/or poorly organized.
+4. It has serious problems in language and
+sentence structure that frequently interfere
+with meaning.
+5. It contains serious errors in grammar, usage,
+or mechanics that frequently obscure meaning.
+
+Score 1
+A 1 response demonstrates fundamental deficiencies
+in analytical writing.
+A typical response in this category exhibits ONE OR
+MORE of the following characteristics:
+1. It provides little or no evidence of
+understanding the issue.
+2. It provides little or no evidence of the ability to
+develop an organized response (e.g., is
+disorganized and/or extremely brief).
+3. It has severe problems in language and
+sentence structure that persistently interfere
+with meaning.
+4. It contains pervasive errors in grammar,
+usage, or mechanics that result in incoherence.
+
+Score 0
+A 0 response is off topic (i.e., provides no evidence of
+an attempt to respond to the assigned topic), written
+in a foreign language, merely copies the topic,
+consists of only keystroke characters, or is illegible or
+nonverbal.
 </rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
 
 The prompt is as follows:
 <essay_prompt>
 {prompt}
 </essay_prompt>
-"""
-
-essay_prompt_instruction = """
 
 Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance.
 
-Provide a numerical domain_1_score by using the provided rubric's guidance.
 Output the score in JSON using the following format:
-{
-    "domain_1_score": {essay_score}
-}
-"""
-
-essay_set_2_essay_prompt_instruction = """
-This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
-
-Please provide a numerical score for each domain based on the appropriate rubric.
-Domain 1: Writing Applications
-Domain 2: Language Conventions
-
-- Be sure to Review the given rubrics and prompt carefully, reasoning through your decision for each domain.
-
-Output the scores in JSON using the following format:
-{
-    "domain_1_score": {domain_1_score},
-    "domain_2_score": {domain_2_score}
-}
-"""
-
-output_prompt = """
 {{
-    "domain_1_score": {domain_1_score}
+    "score": {{essay_score}},
+    "feedback": {{student_feedback}}
 }}
 """
 
-output_prompt_set_2 = """
-{{
-    "domain_1_score": {domain_1_score},
-    "domain_2_score": {domain_2_score}
-}}
+    input_prompt = """
+This is the student essay you have to score.
+<student_essay>
+{essay_text}
+</student_essay>
 """
+
+# output_prompt = """
+# {{
+#     "domain_1_score": {domain_1_score}
+# }}
+# """
+
+# output_prompt_set_2 = """
+# {{
+#     "domain_1_score": {domain_1_score},
+#     "domain_2_score": {domain_2_score}
+# }}
+# """
+
+# essay_prompt_instruction = """
+
+# Review the given rubric and prompt carefully and score the <student_essay>.
+
+# Provide a numerical domain_1_score by using the provided rubric's guidance.
+# Output the score in JSON using the following format:
+# {
+#     "domain_1_score": {essay_score}
+# }
+# """
+
+# essay_set_2_essay_prompt_instruction = """
+# This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
+
+# Please provide a numerical score for each domain based on the appropriate rubric.
+# Domain 1: Writing Applications
+# Domain 2: Language Conventions
+
+# - Be sure to Review the given rubrics and prompt carefully, reasoning through your decision for each domain.
+
+# Output the scores in JSON using the following format:
+# {
+#     "domain_1_score": {domain_1_score},
+#     "domain_2_score": {domain_2_score}
+# }
+# """
 
 alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
 
@@ -142,6 +279,97 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 
 ### Response:
 {}"""
+
+
+
+
+class GREArgumentativeAgentPrompts:
+    system_prompt = """
+You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
+You specialize in scoring the argumentative qualities of an essay.
+Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
+
+- Provide an appropriate holistic argumentative score for limited timed test conditions where there is little to no time for revision.
+- You will carefully read the rubric (<argumentative_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
+- You will reason carefully as to why you chose this score following the rubric and guidelines.
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve the argumentative qualities of their essay.
+
+The rubric or rubrics for this essay is as follows:
+<argumentative_rubric>
+Aspect 1: Quality of the response to the prompt instructions
+Score 6: The essay articulates a clear and insightful position on the issue in accordance with the assigned task.
+Score 5: The essay presents a clear and well-considered position on the issue in accordance with the assigned task.
+Score 4: The essay presents a clear position on the issue in accordance with the assigned task.
+Score 3: The essay is vague or limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
+Score 2: The essay is unclear or seriously limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
+Score 1: The essay presents little or no understanding of how to respond to the prompt.
+
+Aspect 2: Considering the complexities of the issue
+Score 6: The essay develops the position fully, with compelling reasons and/or persuasive examples.
+Score 5: The essay develops the position with logically sound reasons and/or well-chosen examples.
+Score 4: The essay develops the position with relevant reasons and/or examples.
+Score 3: The essay is weak in the use of relevant reasons or examples, or relies largely on unsupported claims.
+Score 2: The essay provides few, if any, relevant reasons or examples in support of its claims.
+Score 1: The essay provides little or no evidence of understanding the issue.
+
+Aspect 3: Organizing, developing, and expressing your ideas
+Score 6: The essay sustains a well-focused, well-organized analysis, connecting ideas logically.
+Score 5: The essay is focused and generally well organized, connecting ideas appropriately.
+Score 4: The essay's ideas are adequately focused and organized.
+Score 3: The essay is limited in focus and/or organization.
+Score 2: The essay is poorly focused and/or poorly organized.
+Score 1: The essay provides little or no evidence of the ability to develop an organized response (e.g., is disorganized and/or extremely brief).
+</argumentative_rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance. The score should be a number between 1 and 6.
+
+Output the score in JSON using the following format:
+{{
+    "score": {{essay_score}},
+    "feedback": {{student_feedback}}
+}}
+"""
+
+    input_prompt = GREGeneralGraderPrompts.input_prompt
+
+    def format_prompt_inference(grading_instruction) -> str:
+        system_prompt_formatted = GREArgumentativeAgentPrompts.system_prompt.format(
+            prompt=grading_instruction["prompt"],
+            task_directions=grading_instruction["task_directions"],
+        )
+
+        input_prompt_formatted = GREArgumentativeAgentPrompts.input_prompt.format(
+            essay_text=grading_instruction["essay_text"]
+        )
+
+        return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
+
+
+def format_prompt_inference_gre(grading_instruction) -> str:
+    system_prompt_formatted = GREGeneralGraderPrompts.system_prompt.format(
+        prompt=grading_instruction["prompt"],
+        task_directions=grading_instruction["task_directions"],
+    )
+
+    input_prompt_formatted = GREGeneralGraderPrompts.input_prompt.format(
+        essay_text=grading_instruction["essay_text"]
+    )
+
+    return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
+
+
 
 
 def format_prompt_training(grading_instruction, eos_token):
