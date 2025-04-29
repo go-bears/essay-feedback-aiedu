@@ -42,7 +42,7 @@ def load_prompts(segmentation_prompt_file, essay_prompt_file, evaluation_prompt_
     }
 
 def create_request(idx, system_prompt, user_prompt):
-    request = f'''{{"custom_id": "essay-{idx}", "method": "POST", "url": "/v1/chat/completions", "body": {{"model": "o3-mini", "messages": [{{"role": "system", "content": "{system_prompt}"}},{{"role": "user", "content": "{user_prompt}"}}]}}}}'''
+    request = f'''{{"custom_id": "essay-{idx}", "method": "POST", "url": "/v1/chat/completions", "body": {{"model": "o4-mini", "messages": [{{"role": "system", "content": "{system_prompt}"}},{{"role": "user", "content": "{user_prompt}"}}]}}}}'''
     return request
 
 

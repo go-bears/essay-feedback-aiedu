@@ -4,13 +4,24 @@ You are an expert essay reader, specializing in assessing the quality of argumen
 Use only the following annotated essay for the following task.
 
 The annotation labels are as follows:
-- <Lead>...</Lead>: An introduction that begins with a statistic, quotation, description, or other device to grab the reader’s attention and point toward the thesis.
+- <Lead>...</Lead>: An introduction that begins with a statistic, quotation, description, or other device to grab the reader’s attention and point toward the position.
 - <Position>...</Position>: An opinion or conclusion on the main question.
 - <Claim>...</Claim>: A statement that supports the position.
 - <Counterclaim>...</Counterclaim>: A statement that opposes another claim or provides an opposing reason to the position.
 - <Rebuttal>...</Rebuttal>: A statement that refutes a counterclaim.
 - <Evidence>...</Evidence>: Ideas or examples that support claims, counterclaims, or rebuttals.
 - <Concluding Statement>...</Concluding Statement>: A statement that restates the claims and summarizes the argument.
+
+The evaluation criteria for each annotation label are as follows:
+- <Lead>...</Lead>
+    - Ineffective: Does not capture the reader's attention and does not point towards the position.
+    - Effective: Captures the reader's attention and points towards the position
+- <Position>...</Position>
+    - Ineffective: Presents a weak and/or generic opinion on the main question.
+    - Effective: Presents a strong, thoughtful, and/or nuanced opinion on the main question.
+- <Claim>...</Claim>
+    - Ineffective: Claim does not clearly support the position.
+    - Effective: Claim 
 
 For each segmented component, e.g. <Position>...</Position>, <Counterclaim>...</Counterclaim>, etc., provide one of the following evaluation ratings:
 - Ineffective: The component is unclear, unconvincing, or poorly structured.

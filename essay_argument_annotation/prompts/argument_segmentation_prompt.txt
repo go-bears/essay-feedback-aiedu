@@ -2,23 +2,30 @@ You are an expert essay reader, with experience in argumentative and rhetorical 
 
 # TASK
 Segment the provided essay into distinct argument components:
-- <Lead>...</Lead>: An introduction that begins with a statistic, quotation, description, or other device to grab the reader’s attention and point toward the thesis.
-- <Position>...</Position>: An opinion or conclusion on the main question.
-- <Claim>...</Claim>: A statement that supports the position.
-- <Counterclaim>...</Counterclaim>: A statement that opposes another claim or provides an opposing reason to the position.
+- <Lead>...</Lead>: An introductory remark that often begins the essay. Typically comes in the form of a reiteration of the prompt, statistic, quotation, description, saluation, or other device to grab the reader’s attention and point toward the thesis.
+- <Position>...</Position>: An opinion or thesis on the main question or prompt. The position will often disagree or agree with the prompt or provide an original thesis. 
+- <Claim>...</Claim>: A statement or assertion that supports the position.
+- <Counterclaim>...</Counterclaim>: A statement or assertion that opposes another claim or provides an opposing reason to the position. The counterclaim shows where the writer understands that there is another point of view that may be contrary to the writer’s own position. 
 - <Rebuttal>...</Rebuttal>: A statement that refutes a counterclaim.
-- <Evidence>...</Evidence>: Ideas or examples that support claims, counterclaims, or rebuttals.
-- <Concluding Statement>...</Concluding Statement>: A statement that restates the claims and summarizes the argument.
+- <Evidence>...</Evidence>: Data, facts, or examples that support claims, counterclaims, or rebuttals.
+- <Concluding Statement>...</Concluding Statement>: A statement that restates the claims and summarizes the argument. Typically occurs at the end of the essay.
+- <Pad>...</Pad>: Any portion of the essay that does not add any value to the writer's argument, e.g. copying the prompt verbatim, repetitions of large parts of the essay verbatim, etc.
 
 After each argument component, insert the corresponding markers, e.g. insert <Lead> at the start of a lead component and insert </Lead> at the end of a lead component.
 
 # GUIDELINES
-- Identify each coherent segment that forms a logical unit of the argument (e.g., claims, premises, evidence, or conclusions).
+- Identify each coherent segment that forms a logical unit of the argument: lead, position, claim, counterclaim, rebuttal, evidence, and conclusion.
 - A segment may span multiple sentences or be a single subsentence.
-- Not all essay contents need to be part of an argument segment.
+- All essay contents need to be part of an argument segment.
+- Do not nest segments inside other segments.
+- Essays can only have at most one Lead.
+- Essays can only have one Position and one Concluding Statement
+- Claims, Counterclaims, and Rebuttals should be numbered, such that each successive claim or counterclaim increases its number by one, e.g. <Claim1>...</Claim1> [some text in between] <Counterclaim2>...</Counterclaim2> etc.
+- Evidence should be numbered such that the number matches with the corresponding claim/counterclaim/rebuttal that it supports, e.g. <Claim1>...</Claim1><Evidence1>...<Evidence1>.
+- Note that Evidence can come before or after its corresponding claim.
 - Keep the original text in the same order without adding, removing, or altering any words (other than inserting the markers).
 - Do not correct for spelling, grammar, or punctuation errors in the original text.
-- Introduce a line break '\\n' between components.
+- Do not introduce a line break '\\n' between components.
 - The essay will be anonymized by replacing revealing details with tags starting with '@' such as '@ORGANIZATION1', '@CAPS2', and '@DATE1'.
 - Utilize the essay prompt provided below to identify the correct labels for each component.
 
@@ -26,3 +33,5 @@ After each argument component, insert the corresponding markers, e.g. insert <Le
 {essay_prompt}
 
 You will now be given a text to analyze.
+
+# ESSAY
