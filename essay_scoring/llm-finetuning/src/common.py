@@ -217,8 +217,8 @@ Provide a numerical score by using the provided rubric's guidance.
 
 Output the score in JSON using the following format:
 {{
-    "score": {{essay_score}},
-    "feedback": {{student_feedback}}
+    "score": {{score}},
+    "feedback": {{feedback}}
 }}
 """
 
@@ -228,6 +228,100 @@ This is the student essay you have to score.
 {essay_text}
 </student_essay>
 """
+
+class GREOrchestratorPrompts:
+    system_prompt = """
+You are an expert professional grader who scores student essays tagged <student_essay> based on other expert grader's scores and reasoning.
+Please provide a numerical score for the provided essay according to the opinions of the other expert grader's scores and reasoning.
+Each expert grader is an expert grader for a specific aspect of the essay.
+
+- The length of the essay matters, a well developed essay should have at least 3-4 well written paragraphs.
+- You will carefully read each expert grader's score and reasoning, prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
+- You will reason carefully as to why you chose this score balancing the opinions of the other expert grader's scores and reasoning.
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve their essay, balancing the opinions of the other expert grader's feedback.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
+
+The expert grader's scores and reasoning are as follows:
+{expert_grader_scores_and_reasoning}
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given expert grader's scores and reasoning, prompt and student essay carefully and score the <student_essay>.
+Provide an integer score between 0 and 6 by balancing the provided expert grader's scores and reasoning.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
+
+Output the score in JSON using the following format:
+{{
+    "score": (your generated score),
+    "feedback": (your generated feedback)
+}}
+"""
+
+    input_prompt = GREGeneralGraderPrompts.input_prompt
+
+    def dump_prompts() -> dict:
+        return {
+            "system_prompt": GREOrchestratorPrompts.system_prompt,
+            "input_prompt": GREOrchestratorPrompts.input_prompt,
+        }
+
+
+    def format_prompt_inference(grading_instruction, domain_scores, domain_feedbacks) -> str:
+        expert_grader_scores_and_reasoning = ""
+        for domain_score, domain_feedback, aspect_rubric in zip(domain_scores, domain_feedbacks, GREAgentPrompts.aspect_rubrics):
+            aspect_name = aspect_rubric.strip().split(".", 1)[0] + "."
+            expert_grader_scores_and_reasoning += f"""
+<expert_grader_judgement>
+{aspect_name}
+{{
+    "score": {domain_score},
+    "feedback": {domain_feedback}
+}}
+</expert_grader_judgement>\n
+"""
+
+        system_prompt_formatted = GREOrchestratorPrompts.system_prompt.format(
+            expert_grader_scores_and_reasoning=expert_grader_scores_and_reasoning,
+            prompt=grading_instruction["prompt"],
+            task_directions=grading_instruction["task_directions"],
+        )
+        input_prompt_formatted = GREOrchestratorPrompts.input_prompt.format(
+            essay_text=grading_instruction["essay_text"]
+        )
+
+        return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
+    
+
+#     def format_prompt_inference(grading_instruction, judgement_list: list[str]) -> str:
+#         expert_grader_scores_and_reasoning = ""
+#         for judgement, aspect_rubric in zip(judgement_list, GREAgentPrompts.aspect_rubrics):
+#             aspect_name = aspect_rubric.strip().split(".", 1)[0] + "."
+#             expert_grader_scores_and_reasoning += f"""
+# <expert_grader_judgement>
+# {aspect_name}
+# {judgement}
+# </expert_grader_judgement>\n
+# """
+
+#         system_prompt_formatted = GREOrchestratorPrompts.system_prompt.format(
+#             expert_grader_scores_and_reasoning=expert_grader_scores_and_reasoning,
+#             prompt=grading_instruction["prompt"],
+#             task_directions=grading_instruction["task_directions"],
+#         )
+#         input_prompt_formatted = GREOrchestratorPrompts.input_prompt.format(
+#             essay_text=grading_instruction["essay_text"]
+#         )
+
+#         return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
 
 # output_prompt = """
 # {{
@@ -249,7 +343,7 @@ This is the student essay you have to score.
 # Provide a numerical domain_1_score by using the provided rubric's guidance.
 # Output the score in JSON using the following format:
 # {
-#     "domain_1_score": {essay_score}
+#     "domain_1_score": {score}
 # }
 # """
 
@@ -344,11 +438,14 @@ You are an expert professional grader who scores student essays tagged <student_
 You specialize in scoring the argumentative qualities of an essay.
 Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
 
-- Provide an appropriate holistic argumentative score for limited timed test conditions where there is little to no time for revision.
+
+- Provide an appropriate holistic argumentative score.
+- The length of the essay matters, a well developed essay should have at least 3-4 well written paragraphs.
 - You will carefully read the rubric (<argumentative_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
 - You will provide a detailed explanation of your reasoning for the score.
 - You will provide feedback for the student on how to improve the argumentative qualities of their essay.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
 The rubric or rubrics for this essay is as follows:
 <argumentative_rubric>
@@ -367,11 +464,12 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
 
 Output the score in JSON using the following format:
 {{
-    "score": {{essay_score}},
-    "feedback": {{student_feedback}}
+    "score": (your generated score),
+    "feedback": (your generated feedback)
 }}
 """
     vocabulary_system_prompt = """
@@ -379,11 +477,12 @@ You are an expert professional grader who scores student essays tagged <student_
 You specialize in scoring the vocabulary and sentence variety of an essay.
 Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
 
-- Provide an appropriate holistic vocabulary score for limited timed test conditions where there is little to no time for revision.
+- Provide an appropriate holistic vocabulary score.
 - You will carefully read the rubric (<vocabulary_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
 - You will provide a detailed explanation of your reasoning for the score.
 - You will provide feedback for the student on how to improve the vocabulary and sentence variety of their essay.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
 The rubric or rubrics for this essay is as follows:
 <vocabulary_rubric>
@@ -402,11 +501,12 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
 
 Output the score in JSON using the following format:
 {{
-    "score": {{essay_score}},
-    "feedback": {{student_feedback}}
+    "score": (your generated score),
+    "feedback": (your generated feedback)
 }}
 """
 
@@ -415,11 +515,12 @@ You are an expert professional grader who scores student essays tagged <student_
 You specialize in scoring the grammar and mechanics of an essay.
 Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
 
-- Provide an appropriate holistic grammar score for limited timed test conditions where there is little to no time for revision.
+- Provide an appropriate holistic grammar score.
 - You will carefully read the rubric (<grammar_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
 - You will provide a detailed explanation of your reasoning for the score.
 - You will provide feedback for the student on how to improve the grammar and mechanics of their essay.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
 The rubric or rubrics for this essay is as follows:
 <grammar_rubric>
@@ -438,14 +539,16 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
 
 Output the score in JSON using the following format:
 {{
-    "score": {{essay_score}},
-    "feedback": {{student_feedback}}
+    "score": (your generated score),
+    "feedback": (your generated feedback)
 }}
 """
     input_prompt = GREGeneralGraderPrompts.input_prompt
+    
 
     def dump_prompts() -> dict:
         return {

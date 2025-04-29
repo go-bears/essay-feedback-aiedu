@@ -10,24 +10,24 @@ from sklearn.metrics import cohen_kappa_score
 file = open("tmp.json", "r")
 data = json.load(file)
 
-pred = data["predicted_labels"]
+pred = data["predicted_labels"]["orchestrated_scores"]
 gt = data["ground_truths"]
 
 print("pred:", pred)
 print("gt:", gt)
 
-# for tup
-pred_1 = [int(tup[0]) for tup in pred['1']]
-gt_1 = [int(tup[0]) for tup in gt['1']]
+# # for tup
+# pred_1 = [int(tup[0]) for tup in pred]
+# gt_1 = [int(tup[0]) for tup in gt]
 
 
-# # gt_1[8] = 1
-# pred_1.append(0)
-# gt_1.append(0)
-print("pred 1:", pred_1)
-print("gt 1:", gt_1)
+# # # gt_1[8] = 1
+# # pred_1.append(0)
+# # gt_1.append(0)
+# print("pred 1:", pred_1)
+# print("gt 1:", gt_1)
 
-score = cohen_kappa_score(gt_1, pred_1, weights="quadratic", labels=numpy.unique(pred_1))
+score = cohen_kappa_score(gt, pred, weights="quadratic")
 
 print(score)
 
