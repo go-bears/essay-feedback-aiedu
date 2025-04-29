@@ -283,8 +283,63 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 
 
 
-class GREArgumentativeAgentPrompts:
-    system_prompt = """
+class GREAgentPrompts:
+    aspect_1_rubric = """
+Aspect 1: Quality of the response to the prompt instructions
+Score 6: The essay articulates a clear and insightful position on the issue in accordance with the assigned task.
+Score 5: The essay presents a clear and well-considered position on the issue in accordance with the assigned task.
+Score 4: The essay presents a clear position on the issue in accordance with the assigned task.
+Score 3: The essay is vague or limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
+Score 2: The essay is unclear or seriously limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
+Score 1: The essay presents little or no understanding of how to respond to the prompt.
+Score 0: The essay is off topic (i.e., provides no evidence of an attempt to respond to the assigned topic), written in a foreign language, merely copies the topic, consists of only keystroke characters, or is illegible or nonverbal.
+"""
+    aspect_2_rubric = """
+Aspect 2: Considering the complexities of the issue
+Score 6: The essay develops the position fully, with compelling reasons and/or persuasive examples.
+Score 5: The essay develops the position with logically sound reasons and/or well-chosen examples.
+Score 4: The essay develops the position with relevant reasons and/or examples.
+Score 3: The essay is weak in the use of relevant reasons or examples, or relies largely on unsupported claims.
+Score 2: The essay provides few, if any, relevant reasons or examples in support of its claims.
+Score 1: The essay provides little or no evidence of understanding the issue.
+Score 0: The essay is off topic (i.e., provides no evidence of an attempt to respond to the assigned topic), written in a foreign language, merely copies the topic, consists of only keystroke characters, or is illegible or nonverbal.
+"""
+    aspect_3_rubric = """
+Aspect 3: Organizing, developing, and expressing ideas
+Score 6: The essay sustains a well-focused, well-organized analysis, connecting ideas logically.
+Score 5: The essay is focused and generally well organized, connecting ideas appropriately.
+Score 4: The essay's ideas are adequately focused and organized.
+Score 3: The essay is limited in focus and/or organization.
+Score 2: The essay is poorly focused and/or poorly organized.
+Score 1: The essay provides little or no evidence of the ability to develop an organized response (e.g., is disorganized and/or extremely brief).
+Score 0: The essay is off topic (i.e., provides no evidence of an attempt to respond to the assigned topic), written in a foreign language, merely copies the topic, consists of only keystroke characters, or is illegible or nonverbal.
+"""
+
+    aspect_4_rubric = """
+Aspect 4: Vocabulary and sentence variety
+Score 6: The essay conveys ideas fluently and precisely, using effective vocabulary and sentence variety.
+Score 5: The essay conveys ideas clearly and well, using appropriate vocabulary and sentence variety.
+Score 4: The essay conveys ideas with acceptable clarity, demonstrating sufficient control of language.
+Score 3: The essay has problems in language and sentence structure that result in a lack of clarity.
+Score 2: The essay has serious problems in language and sentence structure that frequently interfere with meaning.
+Score 1: The essay has severe problems in language and sentence structure that persistently interfere with meaning.
+Score 0: The essay is off topic (i.e., provides no evidence of an attempt to respond to the assigned topic), written in a foreign language, merely copies the topic, consists of only keystroke characters, or is illegible or nonverbal.
+"""
+
+    aspect_5_rubric = """
+Aspect 5: Grammar and mechanics
+Score 6: The essay demonstrates superior facility with the conventions of standard written English (i.e., grammar, usage, and mechanics) but may have minor errors.
+Score 5: The essay demonstrates facility with the conventions of standard written English but may have minor errors.
+Score 4: The essay generally demonstrates control of the conventions of standard written English but may have some errors.
+Score 3: The essay contains contains occasional major errors or frequent minor errors in grammar, usage, or mechanics that can interfere with meaning.
+Score 2: The essay contains serious errors in grammar, usage, or mechanics that frequently obscure meaning.
+Score 1: The essay contains pervasive errors in grammar, usage, or mechanics that result in incoherence.
+Score 0: The essay is off topic (i.e., provides no evidence of an attempt to respond to the assigned topic), written in a foreign language, merely copies the topic, consists of only keystroke characters, or is illegible or nonverbal.
+"""
+
+    aspect_rubrics = [aspect_1_rubric, aspect_2_rubric, aspect_3_rubric, aspect_4_rubric, aspect_5_rubric]
+
+    argumentative_system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
 You specialize in scoring the argumentative qualities of an essay.
 Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
@@ -297,29 +352,7 @@ Please provide a numerical score for the provided essay considering all aspects 
 
 The rubric or rubrics for this essay is as follows:
 <argumentative_rubric>
-Aspect 1: Quality of the response to the prompt instructions
-Score 6: The essay articulates a clear and insightful position on the issue in accordance with the assigned task.
-Score 5: The essay presents a clear and well-considered position on the issue in accordance with the assigned task.
-Score 4: The essay presents a clear position on the issue in accordance with the assigned task.
-Score 3: The essay is vague or limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
-Score 2: The essay is unclear or seriously limited in addressing the specific task directions and/or in presenting or developing a position on the issue.
-Score 1: The essay presents little or no understanding of how to respond to the prompt.
-
-Aspect 2: Considering the complexities of the issue
-Score 6: The essay develops the position fully, with compelling reasons and/or persuasive examples.
-Score 5: The essay develops the position with logically sound reasons and/or well-chosen examples.
-Score 4: The essay develops the position with relevant reasons and/or examples.
-Score 3: The essay is weak in the use of relevant reasons or examples, or relies largely on unsupported claims.
-Score 2: The essay provides few, if any, relevant reasons or examples in support of its claims.
-Score 1: The essay provides little or no evidence of understanding the issue.
-
-Aspect 3: Organizing, developing, and expressing your ideas
-Score 6: The essay sustains a well-focused, well-organized analysis, connecting ideas logically.
-Score 5: The essay is focused and generally well organized, connecting ideas appropriately.
-Score 4: The essay's ideas are adequately focused and organized.
-Score 3: The essay is limited in focus and/or organization.
-Score 2: The essay is poorly focused and/or poorly organized.
-Score 1: The essay provides little or no evidence of the ability to develop an organized response (e.g., is disorganized and/or extremely brief).
+{argumentative_rubric}
 </argumentative_rubric>
 
 The given task is as follows:
@@ -333,7 +366,42 @@ The prompt is as follows:
 </essay_prompt>
 
 Review the given rubric and prompt carefully and score the <student_essay>.
-Provide a numerical score by using the provided rubric's guidance. The score should be a number between 1 and 6.
+Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
+
+Output the score in JSON using the following format:
+{{
+    "score": {{essay_score}},
+    "feedback": {{student_feedback}}
+}}
+"""
+    vocabulary_system_prompt = """
+You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
+You specialize in scoring the vocabulary and sentence variety of an essay.
+Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
+
+- Provide an appropriate holistic vocabulary score for limited timed test conditions where there is little to no time for revision.
+- You will carefully read the rubric (<vocabulary_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
+- You will reason carefully as to why you chose this score following the rubric and guidelines.
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve the vocabulary and sentence variety of their essay.
+
+The rubric or rubrics for this essay is as follows:
+<vocabulary_rubric>
+{vocabulary_rubric}
+</vocabulary_rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
 
 Output the score in JSON using the following format:
 {{
@@ -342,15 +410,78 @@ Output the score in JSON using the following format:
 }}
 """
 
+    grammar_system_prompt = """
+You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
+You specialize in scoring the grammar and mechanics of an essay.
+Please provide a numerical score for the provided essay considering all aspects of the specified rubric.
+
+- Provide an appropriate holistic grammar score for limited timed test conditions where there is little to no time for revision.
+- You will carefully read the rubric (<grammar_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
+- You will reason carefully as to why you chose this score following the rubric and guidelines.
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve the grammar and mechanics of their essay.
+
+The rubric or rubrics for this essay is as follows:
+<grammar_rubric>
+{grammar_rubric}
+</grammar_rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
+
+Output the score in JSON using the following format:
+{{
+    "score": {{essay_score}},
+    "feedback": {{student_feedback}}
+}}
+"""
     input_prompt = GREGeneralGraderPrompts.input_prompt
 
-    def format_prompt_inference(grading_instruction) -> str:
-        system_prompt_formatted = GREArgumentativeAgentPrompts.system_prompt.format(
-            prompt=grading_instruction["prompt"],
-            task_directions=grading_instruction["task_directions"],
-        )
+    def dump_prompts() -> dict:
+        return {
+            "argumentative_system_prompt": GREAgentPrompts.argumentative_system_prompt,
+            "vocabulary_system_prompt": GREAgentPrompts.vocabulary_system_prompt,
+            "grammar_system_prompt": GREAgentPrompts.grammar_system_prompt,
+            "input_prompt": GREAgentPrompts.input_prompt,
+            "aspect_rubrics": GREAgentPrompts.aspect_rubrics,
+        }
 
-        input_prompt_formatted = GREArgumentativeAgentPrompts.input_prompt.format(
+
+    def format_prompt_inference(grading_instruction, agent_rubric_item: int) -> str:
+        """
+        Aspects 1-3 are argumentative, 4 is vocabulary, 5 is grammar
+        """
+        assert agent_rubric_item in [1, 2, 3, 4, 5]
+        if agent_rubric_item == 4:
+            system_prompt_formatted = GREAgentPrompts.vocabulary_system_prompt.format(
+                vocabulary_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+                prompt=grading_instruction["prompt"],
+                task_directions=grading_instruction["task_directions"],
+            )
+        elif agent_rubric_item == 5:
+            system_prompt_formatted = GREAgentPrompts.grammar_system_prompt.format(
+                grammar_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+                prompt=grading_instruction["prompt"],
+                task_directions=grading_instruction["task_directions"],
+            )
+        else:
+            system_prompt_formatted = GREAgentPrompts.argumentative_system_prompt.format(
+                argumentative_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+                prompt=grading_instruction["prompt"],
+                task_directions=grading_instruction["task_directions"],
+            )
+
+        input_prompt_formatted = GREAgentPrompts.input_prompt.format(
             essay_text=grading_instruction["essay_text"]
         )
 

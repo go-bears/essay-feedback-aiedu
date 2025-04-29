@@ -18,7 +18,7 @@ from .common import (
     format_prompt_inference_iter1,
     format_prompt_inference_ft,
     GREGeneralGraderPrompts,
-    GREArgumentativeAgentPrompts,
+    GREAgentPrompts,
     format_prompt_inference_gre,
 )
 
@@ -66,7 +66,7 @@ def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> di
     return results
 
 
-def try_extract_key(key: str, text: str) -> Optional[str]:
+def try_extract_key(key: str, text: str, dtype: Optional[type] = str) -> Optional[Any]:
     # Step 1: Find JSON objects in the string
     # This pattern looks for text that starts with { and ends with }
     json_pattern = r"{(?:[^{}]|(?:{[^{}]*}))*}"
@@ -82,7 +82,7 @@ def try_extract_key(key: str, text: str) -> Optional[str]:
             match = re.search(domain_score_pattern, potential_json)
             if match:
                 try:
-                    return str(match.group(1))
+                    return dtype(match.group(1))
                 except Exception as e:
                     pass
 
@@ -90,7 +90,7 @@ def try_extract_key(key: str, text: str) -> Optional[str]:
             json_obj = json.loads(potential_json)
             # Check if our key exists directly
             if key in json_obj:
-                return str(json_obj[key])
+                return dtype(json_obj[key])
 
         except Exception as e:
             # Not valid JSON, continue to next match
@@ -383,19 +383,19 @@ def prompt_processing_asap(content: str, essay_set: int):
 
 def inference_loop(
     run_folder: str,
-    model_name: str,
-    backend: Literal["ollama", "vllm"] = "ollama",
+    inference: UnifiedInference,
     few_shot_n: int = 0,
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
-):
+    agent_prompts: Optional[Any] = None,
+    agent_rubric_item: int = -1,
+) -> dict:
     from datasets import load_dataset
     import time
     import pandas as pd
     from sklearn.metrics import cohen_kappa_score
 
-    agent_prompts = GREArgumentativeAgentPrompts
     results: GREResults = []
     ground_truths: GREResults = []
     feedbacks: list[str] = []
@@ -408,11 +408,6 @@ def inference_loop(
 
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
-
-    # Initialize the inference engine
-    inference = UnifiedInference(
-        backend=backend, model_name=model_name, adapters_repo=adapters_repo
-    )
 
     for idx, grading_instruction in enumerate(eval_dataset):
         print(grading_instruction, type(grading_instruction))
@@ -428,7 +423,7 @@ def inference_loop(
             # full_prompt = format_prompt_inference_iter1(
             #     grading_instruction, few_shot_n, add_argument_annotation, train_df
             # )
-            full_prompt = agent_prompts.format_prompt_inference(grading_instruction)
+            full_prompt = agent_prompts.format_prompt_inference(grading_instruction, agent_rubric_item)
         
         # Use the unified inference interface
         start_time = time.time()
@@ -451,9 +446,12 @@ def inference_loop(
         raw_outputs.write(out_str)
 
         # Prompt processing
-        score = try_extract_key("score", content)
-        feedback = try_extract_key("feedback", content)
+        score = try_extract_key("score", content, dtype=int)
+        feedback = try_extract_key("feedback", content, dtype=str)
         if score is None:
+            results.append(np.nan)
+            feedbacks.append(None)
+            none_count += 1
             continue
         feedbacks.append(feedback)
         results.append(int(score))
@@ -463,13 +461,12 @@ def inference_loop(
         if idx % 10 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
                 output = {
-                    "system_prompt": agent_prompts.system_prompt,
-                    "input_prompt": agent_prompts.input_prompt,
+                    "prompts": agent_prompts.dump_prompts(),
                     # "feedbacks": feedbacks,
                     # "few_shot_n": few_shot_n,
                     # "add_argument_annotation": add_argument_annotation,
                     # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
-                    "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
+                    # "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
                     "predicted_labels": results,
                     "ground_truths": ground_truths,
                     "avg_time_ms": float(np.average(times)),
@@ -484,13 +481,12 @@ def inference_loop(
 
     # Store data in a traceable format
     output = {
-        "system_prompt": agent_prompts.system_prompt,
-        "input_prompt": agent_prompts.input_prompt,
+        "prompts": agent_prompts.dump_prompts(),
         "feedbacks": feedbacks,
         # "few_shot_n": few_shot_n,
         # "add_argument_annotation": add_argument_annotation,
         # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
-        "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
+        # "qwk_summary": round(cohen_kappa_score(ground_truths, results, weights="quadratic"), 4),
         "predicted_labels": results,
         "ground_truths": ground_truths,
         "avg_time_ms": float(np.average(times)),
@@ -503,6 +499,7 @@ def inference_loop(
     raw_outputs.close()
     tmp_outs.close()
     VOLUME_CONFIG["/runs"].commit()
+    return output
 
 
 # @inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
@@ -545,6 +542,11 @@ def inference_vllm(
     adapters_repo: str = "",
 ):
     from datetime import datetime
+    import numpy as np
+    from sklearn.model_selection import train_test_split
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import cohen_kappa_score
+
 
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_name = f"vllm-{model_handle.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
@@ -558,19 +560,65 @@ def inference_vllm(
         Colors.END,
         sep="",
     )
-    inference_loop(
-        run_folder,
-        model_name=model_handle,
-        backend="vllm",
-        few_shot_n=few_shot_n,
-        limit=limit,
-        add_argument_annotation=add_argument_annotation,
-        adapters_repo=adapters_repo,
+    # Initialize the inference engine
+    inference_engine = UnifiedInference(
+        backend="vllm", model_name=model_handle, adapters_repo=adapters_repo
     )
+    # Accumulate results lists (rows will be domains, columns will be essays)
+    results_per_domain = []
+    ground_truths = []
+    # Argumentative scoring
+    for rubric_item in [1, 2, 3, 4, 5]:
+        print(Colors.BOLD + Colors.BLUE, f"Running aspect {rubric_item+1}", Colors.END)
+        rubric_item_folder = os.path.join(run_folder, f"aspect_{rubric_item}")
+        os.makedirs(rubric_item_folder, exist_ok=True)
+        output = inference_loop(
+            run_folder=rubric_item_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=add_argument_annotation,
+            adapters_repo=adapters_repo,
+            agent_prompts=GREAgentPrompts,
+            agent_rubric_item=rubric_item,
+        )
+        results_per_domain.append(output["predicted_labels"])
+        ground_truths = output["ground_truths"]
+        
+    # Convert from matrix (domain, essay) to matrix (essay, domain)
+    X = np.array(results_per_domain).T
+    # Result per essay (essay, 1)
+    y = np.array(ground_truths)
+    # Discard incomplete essays (columns with 1 or more NaNs)
+    mask_complete = ~np.isnan(X).any(axis=1)
+    X = X[mask_complete]
+    y = y[mask_complete]
+    # Split into training and test sets
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=903)
+    # Regression model
+    model = LinearRegression()
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    # Round to nearest integer
+    y_pred = np.round(y_pred).astype(int)
+    y_test = y_test.astype(int)
+    # Compute metrics
+    qwk = round(cohen_kappa_score(y_test, y_pred, weights="quadratic"), 4)
+    print(Colors.GREEN + Colors.BOLD + f"Final QWK: {qwk}" + Colors.END)
+    aggregated_output = {
+        "regression_coefficients": model.coef_.tolist(),
+        "regression_intercept": model.intercept_,
+        "predicted_labels": y_pred.tolist(),
+        "ground_truths": y_test.tolist(),
+        "qwk_summary": qwk,
+        "none_rows": none_rows,
+    }
+    with open(os.path.join(run_folder, "regression_output.json"), "w") as f:
+        json.dump(aggregated_output, f)
     VOLUME_CONFIG["/runs"].commit()
+
     print(
         Colors.GREEN,
-        Colors.BOLD,
         "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/"
         + run_name,
         Colors.END,
@@ -619,7 +667,7 @@ def inference_main(
                 f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
             )
         if model == "":
-            gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "google/gemma-3-27b-it"]
+            gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
             for gre_model in gre_models_small:
                 inference_vllm.spawn(
                     gre_model,
