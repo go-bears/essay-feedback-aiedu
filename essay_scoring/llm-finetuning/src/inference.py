@@ -19,7 +19,6 @@ from .common import (
     format_prompt_inference_ft,
     GREGeneralGraderPrompts,
     GREAgentPrompts,
-    format_prompt_inference_gre,
     GREOrchestratorPrompts,
 )
 
@@ -332,7 +331,6 @@ class UnifiedInference:
             else:
                 outputs = self.engine.generate(prompt, sampling_params)
             full_response = outputs[0].outputs[0].text
-            print(f"Full response: {full_response}")
             return full_response
         else:  # ollama
             import httpx
@@ -392,15 +390,117 @@ def compute_kappa(ground_truths: GREResults, predicted_results: GREResults) -> f
     predicted_results = predicted_results[mask_complete]
     return round(cohen_kappa_score(ground_truths, predicted_results, weights="quadratic"), 4)
 
-def inference_loop(
+def inference_loop_baseline(
     run_folder: str,
     inference: UnifiedInference,
     few_shot_n: int = 0,
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
-    agent_prompts: Optional[Any] = None,
-    agent_rubric_item: int = -1,
+):
+    from datasets import load_dataset
+    import time
+    import pandas as pd
+    from sklearn.metrics import cohen_kappa_score
+
+    results: GREResults = []
+    ground_truths: GREResults = []
+    results_feedback: list[str] = []
+    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+    none_count = 0
+
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
+    # train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
+    # train_df = pd.DataFrame(train_dataset)
+
+    n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
+    times = np.zeros((n + 1, 1), dtype=np.float32)
+
+    for idx, grading_instruction in enumerate(eval_dataset):
+        start_time = time.time()
+        ground_truths.append(int(grading_instruction["score"]))
+
+        if adapters_repo != "":
+            full_prompt = format_prompt_inference_ft(grading_instruction)
+        else:
+            full_prompt = GREGeneralGraderPrompts.format_prompt_inference(grading_instruction, add_argument_annotation=add_argument_annotation)
+        
+        # Use the unified inference interface
+        content = inference.generate(full_prompt)
+
+        out_str = (
+            "=" * 30
+            + f"Interaction {idx}"
+            + "=" * 30
+            + "\nPrompt:\n"
+            + full_prompt
+            + "\n\n"
+            + "Response:\n"
+            + content
+            + "\n\n"
+        )
+
+        # Log the output
+        print(out_str)
+        raw_outputs.write(out_str)
+
+        # Prompt processing
+        score = try_extract_key("score", content, dtype=int)
+        feedback = try_extract_key("feedback", content, dtype=str)
+        results_feedback.append(feedback)
+        if score is None:
+            results.append(np.nan)
+            none_count += 1
+            continue
+        results.append(score)
+        
+        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
+        # Periodic writes
+        if idx % 10 == 0:
+            with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
+                output = {
+                    "grader_prompts": GREGeneralGraderPrompts.dump_prompts(),
+                    "qwk_grader": compute_kappa(ground_truths, results),
+                    "predicted_labels": {
+                        "scores": results,
+                        "feedbacks": results_feedback,
+                    },
+                    "ground_truths": ground_truths,
+                    "avg_time_ms": float(np.average(times)),
+                    "sample_size": idx,
+                    "none_count": none_count,
+                }
+                json.dump(output, tmp_outs)
+                VOLUME_CONFIG["/runs"].commit()
+
+    # Store data in a traceable format
+    output = {
+        "grader_prompts": GREGeneralGraderPrompts.dump_prompts(),
+        "qwk_grader": compute_kappa(ground_truths, results),
+        "predicted_labels": {
+            "scores": results,
+            "feedbacks": results_feedback,
+        },
+        "ground_truths": ground_truths,
+        "avg_time_ms": float(np.average(times)),
+        "sample_size": idx,
+        "none_count": none_count,
+    }
+    outfile = open(os.path.join(run_folder, "run.json"), "w")
+    json.dump(output, outfile)
+    outfile.close()
+    raw_outputs.close()
+    tmp_outs.close()
+    VOLUME_CONFIG["/runs"].commit()
+
+
+def inference_loop_orchestration(
+    run_folder: str,
+    inference: UnifiedInference,
+    few_shot_n: int = 0,
+    limit: Optional[int] = None,
+    add_argument_annotation: bool = False,
+    adapters_repo: str = "",
 ) -> dict:
     from datasets import load_dataset
     import time
@@ -418,26 +518,14 @@ def inference_loop(
     none_count = 0
 
     eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
-    # train_dataset = load_dataset("jjordanoc/argumentative-asap", split="train")
-    # train_df = pd.DataFrame(train_dataset)
 
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
-
-    # for rubric_item in [1, 2, 3, 4, 5]:
-    #     # print(Colors.BOLD + Colors.BLUE, f"Folder for aspect {rubric_item+1}", Colors.END)
-    #     rubric_item_folder = os.path.join(run_folder, f"aspect_{rubric_item}")
-    #     os.makedirs(rubric_item_folder, exist_ok=True)
-
-    # ground_truths = np.array([int(row["score"]) for row in eval_dataset])
 
     for idx, grading_instruction in enumerate(eval_dataset):
         start_time = time.time()
         # Has to be here to match length of orchestrated_results
         ground_truths.append(int(grading_instruction["score"]))
-        print("*" * 120)
-        print("Processing essay", idx)
-        print("=" * 80)
 
         domain_scores = []
         domain_feedbacks = []
@@ -447,10 +535,7 @@ def inference_loop(
             if adapters_repo != "":
                 full_prompt = format_prompt_inference_ft(grading_instruction)
             else:
-                # full_prompt = format_prompt_inference_iter1(
-                #     grading_instruction, few_shot_n, add_argument_annotation, train_df
-                # )
-                full_prompt = GREAgentPrompts.format_prompt_inference(grading_instruction, rubric_item)
+                full_prompt = GREAgentPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
             
             # Use the unified inference interface
             content = inference.generate(full_prompt)
@@ -522,9 +607,6 @@ def inference_loop(
                 output = {
                     "orchestrator_prompts": GREOrchestratorPrompts.dump_prompts(),
                     "agent_prompts": GREAgentPrompts.dump_prompts(),
-                    # "few_shot_n": few_shot_n,
-                    # "add_argument_annotation": add_argument_annotation,
-                    # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
                     "qwk_orchestrator": compute_kappa(ground_truths, orchestrated_results),
                     "qwk_average": compute_kappa(ground_truths, averaged_scores),
                     "predicted_labels": {
@@ -541,15 +623,10 @@ def inference_loop(
                 json.dump(output, tmp_outs)
                 VOLUME_CONFIG["/runs"].commit()
 
-        # if idx == n:
-        #     break
     # Store data in a traceable format
     output = {
         "orchestrator_prompts": GREOrchestratorPrompts.dump_prompts(),
         "agent_prompts": GREAgentPrompts.dump_prompts(),
-        # "few_shot_n": few_shot_n,
-        # "add_argument_annotation": add_argument_annotation,
-        # "essay_prompt_set_2": essay_set_2_essay_prompt_instruction,
         "qwk_orchestrator": compute_kappa(ground_truths, orchestrated_results),
         "qwk_average": compute_kappa(ground_truths, averaged_scores),
         "predicted_labels": {
@@ -571,33 +648,6 @@ def inference_loop(
     VOLUME_CONFIG["/runs"].commit()
     return output
 
-
-# @inference_app.function(image=ollama_image, timeout=24 * HOURS, volumes=VOLUME_CONFIG, gpu=INFERENCE_GPU_CONFIG)
-# def inference_ollama(ollama_handle: str):
-#     import ollama
-#     from datasets import load_dataset
-#     from unsloth import FastLanguageModel
-#     import subprocess
-#     from datetime import datetime
-
-#     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-#     run_name = (
-#         f"ollama-{ollama_handle.replace(':', '-')}-{time_string}-{secrets.token_hex(2)}"
-#     )
-#     run_folder = f"/runs/{run_name}"
-#     os.makedirs(run_folder, exist_ok=True)
-#     print(f"Prepared training run in {run_folder}.")
-#     init_ollama()
-
-#     VOLUME_CONFIG["/pretrained"].reload()
-#     subprocess.run(["ollama", "pull", ollama_handle], stdout=subprocess.PIPE)
-#     VOLUME_CONFIG["/pretrained"].commit()
-
-#     inference_loop(run_folder, ollama_handle=ollama_handle)
-
-#     VOLUME_CONFIG["/runs"].commit()
-
-
 def linear_regression_analysis(run_folder: str, results_per_domain: list[GREResults], ground_truths: list[int]):
     """
     Merge results from different domains into a single regression model.
@@ -612,7 +662,7 @@ def linear_regression_analysis(run_folder: str, results_per_domain: list[GREResu
     # Discard incomplete essays (columns with 1 or more NaNs)
     mask_complete = ~np.isnan(X).any(axis=1)
     X = X[mask_complete]
-    y = y[mask_complete]
+    y = y[mask_complete]    
     # Split into training and test sets
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=903)
     # Regression model
@@ -647,6 +697,8 @@ def inference_vllm(
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
+    baseline: bool = False,
+    orchestration: bool = False,
 ):
     from datetime import datetime
     import numpy as np
@@ -669,14 +721,24 @@ def inference_vllm(
     inference_engine = UnifiedInference(
         backend="vllm", model_name=model_handle, adapters_repo=adapters_repo
     )
-    inference_loop(
-        run_folder=run_folder,
-        inference=inference_engine,
-        few_shot_n=few_shot_n,
-        limit=limit,
-        add_argument_annotation=add_argument_annotation,
-        adapters_repo=adapters_repo,
-    )
+    if baseline:
+        inference_loop_baseline(
+            run_folder=run_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=add_argument_annotation,
+            adapters_repo=adapters_repo,
+        )
+    if orchestration:
+        inference_loop_orchestration(
+            run_folder=run_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=add_argument_annotation,
+            adapters_repo=adapters_repo,
+        )
     # Accumulate results lists (rows will be domains, columns will be essays)
     # results_per_domain = []
     # feedbacks_per_domain = []
@@ -748,6 +810,8 @@ def inference_main(
     limit: Optional[int] = None,
     arguments: bool = False,
     adapters_repo: str = "",
+    baseline: bool = False,
+    orchestration: bool = False,
 ):
     """
     Run using vllm handle:
@@ -783,13 +847,16 @@ def inference_main(
         if model == "":
             # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
             gre_models_small = ["google/gemma-3-12b-it"]
+            # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
             for gre_model in gre_models_small:
                 inference_vllm.spawn(
                     gre_model,
                     few_shot_n=shots,   
                     limit=limit,
                     add_argument_annotation=arguments,
-                    adapters_repo=adapters_repo,
+                    adapters_repo=adapters_repo,    
+                    baseline=baseline,
+                    orchestration=orchestration,
                 )
         else:
             handle = inference_vllm.spawn(
@@ -797,6 +864,8 @@ def inference_main(
                 few_shot_n=shots,
                 limit=limit,
                 add_argument_annotation=arguments,
-                adapters_repo=adapters_repo,
+                adapters_repo=adapters_repo,    
+                baseline=baseline,
+                orchestration=orchestration,
             )
             handle.get()

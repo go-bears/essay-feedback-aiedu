@@ -71,19 +71,65 @@ VOLUME_CONFIG: dict[Union[str, PurePosixPath], modal.Volume] = {
     "/runs": runs_volume,
 }
 
-class GREGeneralGraderPrompts:
+class GREBasePrompts:
+    input_prompt = """
+This is the student essay you have to score.
+<student_essay>
+{essay_text}
+</student_essay>
+"""
+    output_format = """
+{
+    "score": (your generated score),
+    "feedback": (your generated feedback)
+}
+"""
+    alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction:
+{}
+
+### Input:
+{}
+
+### Response:
+{}"""
+
+
+class GREGeneralGraderPrompts(GREBasePrompts):
     system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
 Please provide a numerical score for the provided essay according to the specified rubric.
 
-- Provide an appropriate holistic score for limited timed test conditions where there is little to no time for revision.
+- Provide an appropriate holistic score.
 - You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
 - You will provide a detailed explanation of your reasoning for the score.
 - You will provide feedback for the student on how to improve their essay.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
 The rubric or rubrics for this essay is as follows:
 <rubric>
+{rubric}
+</rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
+
+{output_format}
+"""
+    rubric = """
 Score 6
 In addressing the specific task directions, a
 6 response presents a cogent, well­articulated
@@ -200,36 +246,36 @@ an attempt to respond to the assigned topic), written
 in a foreign language, merely copies the topic,
 consists of only keystroke characters, or is illegible or
 nonverbal.
-</rubric>
-
-The given task is as follows:
-<task_directions>
-{task_directions}
-</task_directions>
-
-The prompt is as follows:
-<essay_prompt>
-{prompt}
-</essay_prompt>
-
-Review the given rubric and prompt carefully and score the <student_essay>.
-Provide a numerical score by using the provided rubric's guidance.
-
-Output the score in JSON using the following format:
-{{
-    "score": {{score}},
-    "feedback": {{feedback}}
-}}
 """
 
-    input_prompt = """
-This is the student essay you have to score.
-<student_essay>
-{essay_text}
-</student_essay>
-"""
+    @classmethod
+    def dump_prompts(cls) -> dict:
+        return {
+            "system_prompt": cls.system_prompt,
+            "input_prompt": cls.input_prompt,
+        }
+    
+    @classmethod
+    def format_prompt_inference(cls, grading_instruction, add_argument_annotation: bool = False) -> str:
+        # By default, use the essay text
+        essay_text = grading_instruction["essay_text"]
+        if add_argument_annotation:
+            essay_text = grading_instruction["argument_annotation"]
 
-class GREOrchestratorPrompts:
+        system_prompt_formatted = cls.system_prompt.format(
+            prompt=grading_instruction["prompt"],
+            task_directions=grading_instruction["task_directions"],
+            rubric=cls.rubric,
+            output_format=cls.output_format,
+        )
+
+        input_prompt_formatted = cls.input_prompt.format(
+            essay_text=essay_text
+        )
+        return cls.alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
+    
+
+class GREOrchestratorPrompts(GREBasePrompts):
     system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on other expert grader's scores and reasoning.
 Please provide a numerical score for the provided essay according to the opinions of the other expert grader's scores and reasoning.
@@ -257,25 +303,20 @@ The prompt is as follows:
 
 Review the given expert grader's scores and reasoning, prompt and student essay carefully and score the <student_essay>.
 Provide an integer score between 0 and 6 by balancing the provided expert grader's scores and reasoning.
-Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
-Output the score in JSON using the following format:
-{{
-    "score": (your generated score),
-    "feedback": (your generated feedback)
-}}
+{output_format}
 """
 
-    input_prompt = GREGeneralGraderPrompts.input_prompt
-
-    def dump_prompts() -> dict:
+    @classmethod
+    def dump_prompts(cls) -> dict:
         return {
-            "system_prompt": GREOrchestratorPrompts.system_prompt,
-            "input_prompt": GREOrchestratorPrompts.input_prompt,
+            "system_prompt": cls.system_prompt,
+            "input_prompt": cls.input_prompt,
         }
 
-
-    def format_prompt_inference(grading_instruction, domain_scores, domain_feedbacks) -> str:
+    @classmethod
+    def format_prompt_inference(cls, grading_instruction, domain_scores, domain_feedbacks) -> str:
         expert_grader_scores_and_reasoning = ""
         for domain_score, domain_feedback, aspect_rubric in zip(domain_scores, domain_feedbacks, GREAgentPrompts.aspect_rubrics):
             aspect_name = aspect_rubric.strip().split(".", 1)[0] + "."
@@ -289,95 +330,24 @@ Output the score in JSON using the following format:
 </expert_grader_judgement>\n
 """
 
-        system_prompt_formatted = GREOrchestratorPrompts.system_prompt.format(
+        system_prompt_formatted = cls.system_prompt.format(
             expert_grader_scores_and_reasoning=expert_grader_scores_and_reasoning,
             prompt=grading_instruction["prompt"],
             task_directions=grading_instruction["task_directions"],
+            output_format=cls.output_format,
         )
-        input_prompt_formatted = GREOrchestratorPrompts.input_prompt.format(
+        input_prompt_formatted = cls.input_prompt.format(
             essay_text=grading_instruction["essay_text"]
         )
 
-        return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
-    
-
-#     def format_prompt_inference(grading_instruction, judgement_list: list[str]) -> str:
-#         expert_grader_scores_and_reasoning = ""
-#         for judgement, aspect_rubric in zip(judgement_list, GREAgentPrompts.aspect_rubrics):
-#             aspect_name = aspect_rubric.strip().split(".", 1)[0] + "."
-#             expert_grader_scores_and_reasoning += f"""
-# <expert_grader_judgement>
-# {aspect_name}
-# {judgement}
-# </expert_grader_judgement>\n
-# """
-
-#         system_prompt_formatted = GREOrchestratorPrompts.system_prompt.format(
-#             expert_grader_scores_and_reasoning=expert_grader_scores_and_reasoning,
-#             prompt=grading_instruction["prompt"],
-#             task_directions=grading_instruction["task_directions"],
-#         )
-#         input_prompt_formatted = GREOrchestratorPrompts.input_prompt.format(
-#             essay_text=grading_instruction["essay_text"]
-#         )
-
-#         return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
-
-# output_prompt = """
-# {{
-#     "domain_1_score": {domain_1_score}
-# }}
-# """
-
-# output_prompt_set_2 = """
-# {{
-#     "domain_1_score": {domain_1_score},
-#     "domain_2_score": {domain_2_score}
-# }}
-# """
-
-# essay_prompt_instruction = """
-
-# Review the given rubric and prompt carefully and score the <student_essay>.
-
-# Provide a numerical domain_1_score by using the provided rubric's guidance.
-# Output the score in JSON using the following format:
-# {
-#     "domain_1_score": {score}
-# }
-# """
-
-# essay_set_2_essay_prompt_instruction = """
-# This essay requires 2 scores, and you have been provided with both rubrics in the system prompt.
-
-# Please provide a numerical score for each domain based on the appropriate rubric.
-# Domain 1: Writing Applications
-# Domain 2: Language Conventions
-
-# - Be sure to Review the given rubrics and prompt carefully, reasoning through your decision for each domain.
-
-# Output the scores in JSON using the following format:
-# {
-#     "domain_1_score": {domain_1_score},
-#     "domain_2_score": {domain_2_score}
-# }
-# """
-
-alpaca_prompt = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-### Instruction:
-{}
-
-### Input:
-{}
-
-### Response:
-{}"""
+        return cls.alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
 
 
 
 
-class GREAgentPrompts:
+
+
+class GREAgentPrompts(GREBasePrompts):
     aspect_1_rubric = """
 Aspect 1: Quality of the response to the prompt instructions
 Score 6: The essay articulates a clear and insightful position on the issue in accordance with the assigned task.
@@ -464,13 +434,9 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
-Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
-Output the score in JSON using the following format:
-{{
-    "score": (your generated score),
-    "feedback": (your generated feedback)
-}}
+{output_format}
 """
     vocabulary_system_prompt = """
 You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
@@ -501,13 +467,9 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
-Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
-Output the score in JSON using the following format:
-{{
-    "score": (your generated score),
-    "feedback": (your generated feedback)
-}}
+{output_format}
 """
 
     grammar_system_prompt = """
@@ -539,101 +501,95 @@ The prompt is as follows:
 
 Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance. The score should be a number between 0 and 6.
-Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays. Overly high scores are harmful to the student.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
-Output the score in JSON using the following format:
-{{
-    "score": (your generated score),
-    "feedback": (your generated feedback)
-}}
+{output_format}
 """
-    input_prompt = GREGeneralGraderPrompts.input_prompt
     
 
-    def dump_prompts() -> dict:
+    @classmethod
+    def dump_prompts(cls) -> dict:
         return {
-            "argumentative_system_prompt": GREAgentPrompts.argumentative_system_prompt,
-            "vocabulary_system_prompt": GREAgentPrompts.vocabulary_system_prompt,
-            "grammar_system_prompt": GREAgentPrompts.grammar_system_prompt,
-            "input_prompt": GREAgentPrompts.input_prompt,
-            "aspect_rubrics": GREAgentPrompts.aspect_rubrics,
+            "argumentative_system_prompt": cls.argumentative_system_prompt,
+            "vocabulary_system_prompt": cls.vocabulary_system_prompt,
+            "grammar_system_prompt": cls.grammar_system_prompt,
+            "input_prompt": cls.input_prompt,
+            "aspect_rubrics": cls.aspect_rubrics,
         }
 
-
-    def format_prompt_inference(grading_instruction, agent_rubric_item: int) -> str:
+    @classmethod
+    def format_prompt_inference(cls, grading_instruction, agent_rubric_item: int, add_argument_annotation: bool = False) -> str:
         """
         Aspects 1-3 are argumentative, 4 is vocabulary, 5 is grammar
         """
+        # By default, use the essay text
+        essay_text = grading_instruction["essay_text"]
         assert agent_rubric_item in [1, 2, 3, 4, 5]
         if agent_rubric_item == 4:
-            system_prompt_formatted = GREAgentPrompts.vocabulary_system_prompt.format(
-                vocabulary_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+            system_prompt_formatted = cls.vocabulary_system_prompt.format(
+                vocabulary_rubric=cls.aspect_rubrics[agent_rubric_item-1],
                 prompt=grading_instruction["prompt"],
                 task_directions=grading_instruction["task_directions"],
+                output_format=cls.output_format,
             )
         elif agent_rubric_item == 5:
-            system_prompt_formatted = GREAgentPrompts.grammar_system_prompt.format(
-                grammar_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+            system_prompt_formatted = cls.grammar_system_prompt.format(
+                grammar_rubric=cls.aspect_rubrics[agent_rubric_item-1],
                 prompt=grading_instruction["prompt"],
                 task_directions=grading_instruction["task_directions"],
+                output_format=cls.output_format,
             )
         else:
-            system_prompt_formatted = GREAgentPrompts.argumentative_system_prompt.format(
-                argumentative_rubric=GREAgentPrompts.aspect_rubrics[agent_rubric_item-1],
+            system_prompt_formatted = cls.argumentative_system_prompt.format(
+                argumentative_rubric=cls.aspect_rubrics[agent_rubric_item-1],
                 prompt=grading_instruction["prompt"],
                 task_directions=grading_instruction["task_directions"],
+                output_format=cls.output_format,
             )
-
-        input_prompt_formatted = GREAgentPrompts.input_prompt.format(
-            essay_text=grading_instruction["essay_text"]
+            # Use argument annotations if provided (only for argumentative aspects)
+            if add_argument_annotation:
+                essay_text = grading_instruction["argument_annotation"]
+        
+        input_prompt_formatted = cls.input_prompt.format(
+            essay_text=essay_text
         )
 
-        return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
-
-
-def format_prompt_inference_gre(grading_instruction) -> str:
-    system_prompt_formatted = GREGeneralGraderPrompts.system_prompt.format(
-        prompt=grading_instruction["prompt"],
-        task_directions=grading_instruction["task_directions"],
-    )
-
-    input_prompt_formatted = GREGeneralGraderPrompts.input_prompt.format(
-        essay_text=grading_instruction["essay_text"]
-    )
-
-    return alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
+        return cls.alpaca_prompt.format(system_prompt_formatted, input_prompt_formatted, "")
 
 
 
 
-def format_prompt_training(grading_instruction, eos_token):
-    essay_set = int(grading_instruction["essay_set"])
-    system_prompt_formatted = system_prompt.format(
-        rubric=grading_instruction["rubric"],
-        prompt=grading_instruction["essay_prompt"],
-    )
 
-    essay_set_prompt_formatted = (
-        essay_set_2_essay_prompt_instruction
-        if essay_set == 2
-        else essay_prompt_instruction
-    )
-    output_formatted = (
-        output_prompt_set_2.format(
-            domain_1_score=grading_instruction["grader_score"].split(" ")[0],
-            domain_2_score=grading_instruction["grader_score"].split(" ")[1],
-        )
-        if essay_set == 2
-        else output_prompt.format(domain_1_score=grading_instruction["grader_score"])
-    )
-    instructions = system_prompt_formatted + "\n" + essay_set_prompt_formatted
-    inputs = grading_instruction["essay_text"]
-    outputs = output_formatted
-    # Must add EOS_TOKEN, otherwise your generation will go on forever!
-    text = alpaca_prompt.format(instructions, inputs, outputs) + eos_token
-    return {
-        "text": text,
-    }
+
+
+# def format_prompt_training(grading_instruction, eos_token):
+#     essay_set = int(grading_instruction["essay_set"])
+#     system_prompt_formatted = system_prompt.format(
+#         rubric=grading_instruction["rubric"],
+#         prompt=grading_instruction["essay_prompt"],
+#     )
+
+#     essay_set_prompt_formatted = (
+#         essay_set_2_essay_prompt_instruction
+#         if essay_set == 2
+#         else essay_prompt_instruction
+#     )
+#     output_formatted = (
+#         output_prompt_set_2.format(
+#             domain_1_score=grading_instruction["grader_score"].split(" ")[0],
+#             domain_2_score=grading_instruction["grader_score"].split(" ")[1],
+#         )
+#         if essay_set == 2
+#         else output_prompt.format(domain_1_score=grading_instruction["grader_score"])
+#     )
+#     instructions = system_prompt_formatted + "\n" + essay_set_prompt_formatted
+#     inputs = grading_instruction["essay_text"]
+#     outputs = output_formatted
+#     # Must add EOS_TOKEN, otherwise your generation will go on forever!
+#     text = alpaca_prompt.format(instructions, inputs, outputs) + eos_token
+#     return {
+#         "text": text,
+#     }
 
 
 def get_few_shot_examples(train_df, essay_set: int, num: int) -> str:

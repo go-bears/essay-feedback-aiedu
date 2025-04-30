@@ -23,13 +23,15 @@ def main():
             essay_text = row['essay-text']
             essay_feedback = row['essay-feedback']
             task_directions = row['task-directions']
+            argument_annotation = row['essay-argumentative-annotation']
 
             data = {
                "prompt": prompt,
                "score": score,
                "essay_text": essay_text,
                "essay_feedback": essay_feedback,
-               "task_directions": task_directions
+               "task_directions": task_directions,
+               "argument_annotation": argument_annotation,
             }
 
             # Write out the JSON object as one line in the jsonl file.
