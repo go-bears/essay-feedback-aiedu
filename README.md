@@ -1,13 +1,16 @@
 # MAGIC AES
 
 To run inference on a single model (baseline)
-`modal run --detach -m src.inference --backend=vllm --baseline`
+`modal run --detach -m src.inference --baseline`
 
 To run inference with 5 agents and orchestrator
-`modal run --detach -m src.inference --backend=vllm --orchestration`
+`modal run --detach -m src.inference --orchestration`
 
 To run both at the same time
-`modal run --detach -m src.inference --backend=vllm --orchestration --baseline`
+`modal run --detach -m src.inference --orchestration --baseline`
+
+Using all arguments
+`modal run --detach -m src.inference --orchestration --baseline --arguments --judge --model=google/gemma-3-12b-it`
 
 All the prompts used are found in `common.py` and are separated in classes
 - `GREGeneralGraderPrompts` has the prompts for the baseline model (single agent)

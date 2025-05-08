@@ -20,9 +20,10 @@ from .common import (
     GREGeneralGraderPrompts,
     GREAgentPrompts,
     GREOrchestratorPrompts,
+    RubricJudgePrompts,
 )
 
-INFERENCE_GPU_CONFIG = "A100-80GB:2"
+INFERENCE_GPU_CONFIG = "A100-80GB:4"
 
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
@@ -136,68 +137,6 @@ def extract_domain_score(text: str, domain: int) -> Optional[int]:
     return None
 
 
-def init_ollama():
-    import httpx
-    import subprocess
-    import time
-    import os
-
-    # os.environ["OLLAMA_MODELS"] = "/pretrained/ollama"
-    subprocess.run(["systemctl", "daemon-reload"])
-    subprocess.run(["systemctl", "enable", "ollama"])
-    subprocess.run(["systemctl", "start", "ollama"])
-    subprocess.Popen(["ollama", "serve"])
-
-    start_time = time.time()
-    timeout = 30
-    interval = 2
-
-    while True:
-        try:
-            # subprocess.Popen(["ollama", "serve"])
-            response = httpx.get("http://localhost:11434/api/version")
-            if response.status_code == 200:
-                print("Ollama service is ready")
-
-                return
-        except httpx.ConnectError:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("Ollama service failed to start")
-            print(f"Waiting for Ollama service... ({int(time.time() - start_time)}s)")
-            time.sleep(interval)
-
-
-ollama_image = (
-    modal.Image.debian_slim()
-    .apt_install("curl", "systemctl")
-    .run_commands(  # from https://github.com/ollama/ollama/blob/main/docs/linux.md
-        "curl -L https://ollama.com/download/ollama-linux-amd64.tgz -o ollama-linux-amd64.tgz",
-        "tar -C /usr -xzf ollama-linux-amd64.tgz",
-        "useradd -r -s /bin/false -U -m -d /usr/share/ollama ollama",
-        "usermod -a -G ollama $(whoami)",
-    )
-    .env(
-        {
-            "HF_HUB_ENABLE_HF_TRANSFER": "1",
-            "HUGGINGFACE_HUB_CACHE": "/pretrained",
-        }
-    )  # faster model transfers
-    .copy_local_file("ollama.service", "/etc/systemd/system/ollama.service")
-    .pip_install(
-        "ollama",
-        "httpx",
-        "huggingface_hub[hf_transfer]==0.30.1",
-        "fastapi==0.110.0",
-        "pydantic",
-        "transformers==4.51.0",
-        "datasets",
-        "unsloth",
-        "numpy",
-        "scikit-learn",
-    )
-    .entrypoint([])
-)
-
 vllm_image = (
     modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
     .run_commands("apt-get update && apt-get install -y build-essential")
@@ -212,6 +151,7 @@ vllm_image = (
         "unsloth",
         "numpy",
         "scikit-learn",
+        "pydantic",
     )
     .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})  # faster model transfers
     .env({"VLLM_USE_V1": "0"})
@@ -225,6 +165,7 @@ inference_app = modal.App(
         modal.Secret.from_name("huggingface-rw-joaquin"),
         modal.Secret.from_dict({"ALLOW_WANDB": os.environ.get("ALLOW_WANDB", "false")}),
         *([modal.Secret.from_name("wandb")] if ALLOW_WANDB else []),
+        modal.Secret.from_name("openai-secret-xavier"),
     ],
 )
 
@@ -233,11 +174,9 @@ inference_app = modal.App(
 class UnifiedInference:
     def __init__(
         self,
-        backend: Literal["ollama", "vllm"],
         model_name: str = "",
         adapters_repo: str = "",
     ):
-        self.backend = backend
         self.model_name = model_name
         self.engine = None
         if adapters_repo != "":
@@ -246,100 +185,64 @@ class UnifiedInference:
             self.adapters_path = snapshot_download(adapters_repo)
         else:
             self.adapters_path = None
-        if self.backend == "vllm":
-            with vllm_image.imports():
-                from vllm import LLM
+        
+        with vllm_image.imports():
+            from vllm import LLM
 
-            print(
-                Colors.GREEN,
-                Colors.BOLD,
-                f"🧠: Initializing vLLM engine for model {self.model_name}",
-                Colors.END,
-                sep="",
-            )
-            VOLUME_CONFIG["/pretrained"].reload()
+        print(
+            Colors.GREEN,
+            Colors.BOLD,
+            f"🧠: Initializing vLLM engine for model {self.model_name}",
+            Colors.END,
+            sep="",
+        )
+        VOLUME_CONFIG["/pretrained"].reload()
 
-            self.engine = LLM(
-                model=self.model_name,
-                # TODO: bring back
-                tensor_parallel_size=N_INFERENCE_GPUS,
-                pipeline_parallel_size=1,
-                gpu_memory_utilization=0.98,
-                block_size=128,
-                cpu_offload_gb=0,
-                max_model_len=64000,
-                max_num_seqs=8,
-                disable_custom_all_reduce=False,
-                enable_chunked_prefill=True,
-                # TODO: refactor
-                # tensor_parallel_size=1,
-                # pipeline_parallel_size=N_INFERENCE_GPUS,
-                quantization="bitsandbytes",
-                enable_lora=True,
-                max_lora_rank=32,
-                qlora_adapter_name_or_path=self.adapters_path,
-            )
-            VOLUME_CONFIG["/pretrained"].commit()
-        else:  # ollama
-            import httpx
-            import subprocess
-            import time
-
-            subprocess.run(["systemctl", "daemon-reload"])
-            subprocess.run(["systemctl", "enable", "ollama"])
-            subprocess.run(["systemctl", "start", "ollama"])
-            subprocess.Popen(["ollama", "serve"])
-
-            start_time = time.time()
-            timeout = 30
-            interval = 2
-
-            while True:
-                try:
-                    response = httpx.get("http://localhost:11434/api/version")
-                    if response.status_code == 200:
-                        print("Ollama service is ready")
-                        break
-                except httpx.ConnectError:
-                    if time.time() - start_time > timeout:
-                        raise TimeoutError("Ollama service failed to start")
-                    print(
-                        f"Waiting for Ollama service... ({int(time.time() - start_time)}s)"
-                    )
-                    time.sleep(interval)
+        self.engine = LLM(
+            model=self.model_name,
+            # TODO: bring back
+            tensor_parallel_size=N_INFERENCE_GPUS,
+            pipeline_parallel_size=1,
+            gpu_memory_utilization=0.98,
+            block_size=128,
+            cpu_offload_gb=0,
+            max_model_len=64000,
+            max_num_seqs=8,
+            disable_custom_all_reduce=False,
+            enable_chunked_prefill=True,
+            # TODO: refactor
+            # tensor_parallel_size=1,
+            # pipeline_parallel_size=N_INFERENCE_GPUS,
+            quantization="bitsandbytes",
+            enable_lora=True,
+            max_lora_rank=32,
+            qlora_adapter_name_or_path=self.adapters_path,
+        )
+        VOLUME_CONFIG["/pretrained"].commit()
 
     def generate(self, prompt: str) -> str:
-        if self.backend == "vllm":
-            from vllm.sampling_params import SamplingParams
-            from vllm.utils import random_uuid
-            from vllm.lora.request import LoRARequest
+        from vllm.sampling_params import SamplingParams
+        from vllm.utils import random_uuid
+        from vllm.lora.request import LoRARequest
 
-            sampling_params = SamplingParams(
-                seed=903,
-                repetition_penalty=1.1,
-                temperature=0.2,
-                top_p=0.95,
-                top_k=50,
-                max_tokens=1024,
+        sampling_params = SamplingParams(
+            seed=903,
+            repetition_penalty=1.1,
+            temperature=0.2,
+            top_p=0.95,
+            top_k=50,
+            max_tokens=1024,
+        )
+        if self.adapters_path:
+            outputs = self.engine.generate(
+                prompt,
+                sampling_params,
+                lora_request=LoRARequest("asap-lora", 1, self.adapters_path),
             )
-            if self.adapters_path:
-                outputs = self.engine.generate(
-                    prompt,
-                    sampling_params,
-                    lora_request=LoRARequest("asap-lora", 1, self.adapters_path),
-                )
-            else:
-                outputs = self.engine.generate(prompt, sampling_params)
-            full_response = outputs[0].outputs[0].text
-            return full_response
-        else:  # ollama
-            import httpx
-
-            response = httpx.post(
-                "http://localhost:11434/api/generate",
-                json={"model": self.model_name, "prompt": prompt, "stream": False},
-            )
-            return response.json()["response"]
+        else:
+            outputs = self.engine.generate(prompt, sampling_params)
+        full_response = outputs[0].outputs[0].text
+        return full_response
         
 
 def prompt_processing_asap(content: str, essay_set: int):
@@ -397,11 +300,18 @@ def inference_loop_baseline(
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
-):
+    judge: bool = False,
+) -> dict:
     from datasets import load_dataset
     import time
     import pandas as pd
     from sklearn.metrics import cohen_kappa_score
+    
+    if add_argument_annotation:
+        run_folder = run_folder + "/with-argument-annotation"
+    else:
+        run_folder = run_folder + "/no-argument-annotation"
+    os.makedirs(run_folder, exist_ok=True)
 
     results: GREResults = []
     ground_truths: GREResults = []
@@ -420,10 +330,7 @@ def inference_loop_baseline(
         start_time = time.time()
         ground_truths.append(int(grading_instruction["score"]))
 
-        if adapters_repo != "":
-            full_prompt = format_prompt_inference_ft(grading_instruction)
-        else:
-            full_prompt = GREGeneralGraderPrompts.format_prompt_inference(grading_instruction, add_argument_annotation=add_argument_annotation)
+        full_prompt = GREGeneralGraderPrompts.format_prompt_inference(grading_instruction, add_argument_annotation=add_argument_annotation)
         
         # Use the unified inference interface
         content = inference.generate(full_prompt)
@@ -492,6 +399,9 @@ def inference_loop_baseline(
     raw_outputs.close()
     tmp_outs.close()
     VOLUME_CONFIG["/runs"].commit()
+    if judge:
+        llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
+    return output
 
 
 def inference_loop_orchestration(
@@ -501,11 +411,18 @@ def inference_loop_orchestration(
     limit: Optional[int] = None,
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
+    judge: bool = False,
 ) -> dict:
     from datasets import load_dataset
     import time
     import pandas as pd
     from sklearn.metrics import cohen_kappa_score
+
+    if add_argument_annotation:
+        run_folder = run_folder + "/with-argument-annotation"
+    else:
+        run_folder = run_folder + "/no-argument-annotation"
+    os.makedirs(run_folder, exist_ok=True)
 
     orchestrated_results: GREResults = []
     results_per_domain: list[GREResults] = []
@@ -532,10 +449,7 @@ def inference_loop_orchestration(
         domain_responses = []
         
         for rubric_item in [1, 2, 3, 4, 5]:
-            if adapters_repo != "":
-                full_prompt = format_prompt_inference_ft(grading_instruction)
-            else:
-                full_prompt = GREAgentPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
+            full_prompt = GREAgentPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
             
             # Use the unified inference interface
             content = inference.generate(full_prompt)
@@ -612,8 +526,8 @@ def inference_loop_orchestration(
                     "predicted_labels": {
                         "scores_per_domain": results_per_domain,
                         "feedbacks_per_domain": feedbacks_per_domain,
-                        "orchestrated_scores": orchestrated_results,
-                        "orchestrated_feedbacks": orchestrated_feedbacks,
+                        "scores": orchestrated_results,
+                        "feedbacks": orchestrated_feedbacks,
                     },
                     "ground_truths": ground_truths,
                     "avg_time_ms": float(np.average(times)),
@@ -632,8 +546,8 @@ def inference_loop_orchestration(
         "predicted_labels": {
             "scores_per_domain": results_per_domain,
             "feedbacks_per_domain": feedbacks_per_domain,
-            "orchestrated_scores": orchestrated_results,
-            "orchestrated_feedbacks": orchestrated_feedbacks,
+            "scores": orchestrated_results,
+            "feedbacks": orchestrated_feedbacks,
         },
         "ground_truths": ground_truths,
         "avg_time_ms": float(np.average(times)),
@@ -646,6 +560,8 @@ def inference_loop_orchestration(
     raw_outputs.close()
     tmp_outs.close()
     VOLUME_CONFIG["/runs"].commit()
+    if judge:
+        llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
     return output
 
 def linear_regression_analysis(run_folder: str, results_per_domain: list[GREResults], ground_truths: list[int]):
@@ -685,6 +601,91 @@ def linear_regression_analysis(run_folder: str, results_per_domain: list[GREResu
     with open(os.path.join(run_folder, "regression_output.json"), "w") as f:
         json.dump(aggregated_output, f)
 
+
+@inference_app.function(
+    image=vllm_image,
+    timeout=24 * HOURS,
+    volumes=VOLUME_CONFIG,
+    cpu=2.0,
+)
+def llm_as_judge(run_folder: str, feedbacks: list[str] = [], judge_run: str = ""):
+    """
+    Use an LLM as a judge to score a set of essays.
+    """
+    from datasets import load_dataset
+    from openai import OpenAI
+    import pandas as pd
+    os.makedirs(run_folder, exist_ok=True)
+    if judge_run != "":
+        with open(f"/runs/{judge_run}/run.json", "r") as f:
+            output = json.load(f) 
+            feedbacks=output["predicted_labels"]["feedbacks"]
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
+    client = OpenAI()
+    results = []
+    for idx, grading_instruction in enumerate(eval_dataset):
+        # Human will be 1, LLM will be 2
+        prompt = RubricJudgePrompts.format_prompt_judge(feedback_1=grading_instruction["essay_feedback"], 
+                                                  feedback_2=feedbacks[idx], 
+                                                  student_essay=grading_instruction["essay_text"], 
+                                                  task_directions=grading_instruction["task_directions"],
+                                                  prompt=grading_instruction["prompt"]
+                                                  )
+        response = client.beta.chat.completions.parse(
+            model="o4-mini",
+            reasoning_effort="high",
+            messages=[
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            response_format=RubricJudgePrompts.ResponseModel
+        )
+        decision = response.choices[0].message.content
+        # decision = try_extract_key("feedback_choice", response.choices[0].message.content, dtype=int)
+        # reasoning = try_extract_key("explanation", response.choices[0].message.content, dtype=str)
+        # if decision == 1:
+        #     print(Colors.RED + Colors.BOLD + f"Human is better" + Colors.END)
+        #     print(Colors.RED + Colors.BOLD + f"Reasoning: {reasoning}" + Colors.END)
+        #     human_wins += 1
+        # elif decision == 2:
+        #     print(Colors.GREEN + Colors.BOLD + f"LLM is better" + Colors.END)
+        #     print(Colors.GREEN + Colors.BOLD + f"Reasoning: {reasoning}" + Colors.END)
+        #     llm_wins += 1
+        try:
+            decision = json.loads(decision)
+            results.append(decision)
+            print(Colors.BOLD + f"Decision: {decision}" + Colors.END)
+        except:
+            print(Colors.RED + Colors.BOLD + f"Error parsing decision: {decision}" + Colors.END)
+
+    # print(Colors.GREEN + Colors.BOLD + f"LLM wins: {llm_wins}, Human wins: {human_wins}" + Colors.END)
+    output = {
+        "results": results,
+    }
+    with open(os.path.join(run_folder, "judge_output.json"), "w") as f:
+        json.dump(output, f)
+
+    # Analysis
+    df = pd.DataFrame(results)
+    counts = (
+        df
+        .apply(pd.Series.value_counts)   # rows = values (1,2), cols = c1…c5
+        .fillna(0)
+        .astype(int)
+        .T                                # now rows = c1…c5, cols = 1,2
+    )
+
+    # Compute win_rate = (# of 2s) / (total picks)
+    counts['win_rate'] = counts[2] / (counts[1] + counts[2])
+    counts = counts.rename(columns={1: "Human", 2: "LLM"})
+    counts.to_csv(os.path.join(run_folder, "criteria_counts_with_win_rate.csv"))
+    VOLUME_CONFIG["/runs"].commit()
+
+    return results
+
+
 @inference_app.function(
     image=vllm_image,
     timeout=24 * HOURS,
@@ -699,16 +700,93 @@ def inference_vllm(
     adapters_repo: str = "",
     baseline: bool = False,
     orchestration: bool = False,
+    judge: bool = False,
+    run_folder: str = "",
 ):
     from datetime import datetime
     import numpy as np
     from sklearn.metrics import cohen_kappa_score
-
-
-    time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    run_name = f"vllm-{model_handle.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
-    run_folder = f"/runs/{run_name}"
+    
     os.makedirs(run_folder, exist_ok=True)
+    baseline_folder = run_folder + "/baseline"
+    orchestration_folder = run_folder + "/orchestration"
+    os.makedirs(baseline_folder, exist_ok=True)
+    os.makedirs(orchestration_folder, exist_ok=True)
+    # Initialize the inference engine
+    inference_engine = UnifiedInference(
+        model_name=model_handle, adapters_repo=adapters_repo
+    )
+    if baseline:
+        inference_loop_baseline(
+            run_folder=baseline_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=False,
+            adapters_repo=adapters_repo,
+            judge=judge,
+        )   
+        if add_argument_annotation:
+            inference_loop_baseline(
+                run_folder=baseline_folder,
+                inference=inference_engine,
+                few_shot_n=few_shot_n,
+                limit=limit,
+                add_argument_annotation=True,
+                adapters_repo=adapters_repo,
+                judge=judge,
+            )
+    if orchestration:
+        inference_loop_orchestration(
+            run_folder=orchestration_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=False,
+            adapters_repo=adapters_repo,
+            judge=judge,
+        )
+        if add_argument_annotation:
+            inference_loop_orchestration(
+                run_folder=orchestration_folder,
+                inference=inference_engine,
+                few_shot_n=few_shot_n,
+                limit=limit,
+                add_argument_annotation=True,
+                adapters_repo=adapters_repo,
+                judge=judge,
+            )
+       
+    VOLUME_CONFIG["/runs"].commit()
+
+
+@inference_app.local_entrypoint()
+def inference_main(
+    model: str = "",
+    shots: int = 0,
+    limit: Optional[int] = None,
+    arguments: bool = False,
+    adapters_repo: str = "",
+    baseline: bool = False,
+    orchestration: bool = False,
+    judge: bool = False,
+    judge_run: str = "",
+):
+    from datetime import datetime
+    if model in SUPPORTED_MODELS:
+        if adapters_repo == "":
+            print(
+                f"{Colors.BOLD + Colors.RED}Need valid adapters repo for {model}{Colors.END}"
+            )
+            return
+        model = SUPPORTED_MODELS[model]
+        shots = 0
+        print(
+            f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
+        )
+    time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    run_name = f"vllm-{model.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
+    run_folder = f"/runs/{run_name}"
     print(
         Colors.BLUE,
         Colors.BOLD,
@@ -717,155 +795,24 @@ def inference_vllm(
         Colors.END,
         sep="",
     )
-    # Initialize the inference engine
-    inference_engine = UnifiedInference(
-        backend="vllm", model_name=model_handle, adapters_repo=adapters_repo
-    )
-    if baseline:
-        inference_loop_baseline(
-            run_folder=run_folder,
-            inference=inference_engine,
-            few_shot_n=few_shot_n,
-            limit=limit,
-            add_argument_annotation=add_argument_annotation,
-            adapters_repo=adapters_repo,
-        )
-    if orchestration:
-        inference_loop_orchestration(
-            run_folder=run_folder,
-            inference=inference_engine,
-            few_shot_n=few_shot_n,
-            limit=limit,
-            add_argument_annotation=add_argument_annotation,
-            adapters_repo=adapters_repo,
-        )
-    # Accumulate results lists (rows will be domains, columns will be essays)
-    # results_per_domain = []
-    # feedbacks_per_domain = []
-    # ground_truths = []
-    # # Argumentative scoring
-    # for rubric_item in [1, 2, 3, 4, 5]:
-    #     print(Colors.BOLD + Colors.BLUE, f"Running aspect {rubric_item+1}", Colors.END)
-    #     rubric_item_folder = os.path.join(run_folder, f"aspect_{rubric_item}")
-    #     os.makedirs(rubric_item_folder, exist_ok=True)
-    #     output = inference_loop(
-    #         run_folder=rubric_item_folder,
-    #         inference=inference_engine,
-    #         few_shot_n=few_shot_n,
-    #         limit=limit,
-    #         add_argument_annotation=add_argument_annotation,
-    #         adapters_repo=adapters_repo,
-    #         agent_prompts=GREAgentPrompts,
-    #         agent_rubric_item=rubric_item,
-    #     )
-    #     feedbacks_per_domain.append(output["feedbacks"])
-    #     results_per_domain.append(output["predicted_labels"])
-    #     ground_truths = output["ground_truths"]
-        
-    
-    
-
-    # # Merge with orchestration
-    # orchestration_folder = os.path.join(run_folder, "orchestration")
-    # orchestration_output = inference_loop(
-    #     run_folder=orchestration_folder,
-    #     inference=inference_engine,
-    #     few_shot_n=few_shot_n,
-    #     limit=limit,
-    #     add_argument_annotation=add_argument_annotation,
-    #     adapters_repo=adapters_repo,
-    #     agent_prompts=GREAgentPrompts,
-    # )
-    # ground_truths = np.array(orchestration_output["ground_truths"])
-    # orchestrated_scores = np.array(orchestration_output["predicted_labels"])
-    # # Filter out NaNs
-    # mask_complete = ~np.isnan(orchestrated_scores)
-    # orchestrated_scores = orchestrated_scores[mask_complete]
-    # ground_truths = ground_truths[mask_complete]
-    # final_qwk = round(cohen_kappa_score(ground_truths, orchestrated_scores, weights="quadratic"), 4)
-    # print(Colors.GREEN + Colors.BOLD + f"Final QWK: {final_qwk}" + Colors.END)
-    # orchestration_output["final_qwk"] = final_qwk
-    # # Save results
-    # with open(os.path.join(run_folder, "orchestration_output.json"), "w") as f:
-    #     json.dump(orchestration_output, f)
-
-    # linear_regression_analysis(run_folder=run_folder, results_per_domain=results_per_domain, ground_truths=ground_truths)
-
-    VOLUME_CONFIG["/runs"].commit()
-
-    print(
-        Colors.GREEN,
-        "https://modal.com/storage/ai-in-education-essay/main/example-runs-vol/"
-        + run_name,
-        Colors.END,
-        sep="",
-    )
-
-
-@inference_app.local_entrypoint()
-def inference_main(
-    backend: str,
-    model: str = "",
-    shots: int = 0,
-    limit: Optional[int] = None,
-    arguments: bool = False,
-    adapters_repo: str = "",
-    baseline: bool = False,
-    orchestration: bool = False,
-):
-    """
-    Run using vllm handle:
-        modal run --detach -m src.inference --model=google/gemma-3-12b-it --backend=vllm --shots=1 --arguments
-
-    Deepseek With arguments:
-        modal run --detach -m src.inference --model=deepseek-ai/DeepSeek-R1-Distill-Llama-8B --backend=vllm --shots=1 --arguments
-
-    Run using lora adapters:
-        modal run --detach -m src.inference --model=llama-4bit --backend=vllm --adapters_repo=jjordanoc/llama31-ft-asap
-
-    Run using ollama handle:
-        modal run --detach -m src.inference-ollama --model=gemma3:12b --backend=ollama
-
-    Run using multiple models:
-        modal run --detach -m src.inference --backend=vllm
-    """
-    if backend == "ollama":
-        # handle = inference_ollama.spawn(model)
-        pass
+    if judge and judge_run != "":
+        judge_handle = llm_as_judge.spawn(run_folder=run_folder, judge_run=judge_run)
+        judge_handle.get()
     else:
-        if model in SUPPORTED_MODELS:
-            if adapters_repo == "":
-                print(
-                    f"{Colors.BOLD + Colors.RED}Need valid adapters repo for {model}{Colors.END}"
-                )
-                return
-            model = SUPPORTED_MODELS[model]
-            shots = 0
-            print(
-                f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
-            )
-        if model == "":
-            # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
-            gre_models_small = ["google/gemma-3-12b-it"]
-            # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
-            for gre_model in gre_models_small:
-                inference_vllm.spawn(
-                    gre_model,
-                    few_shot_n=shots,   
-                    limit=limit,
-                    add_argument_annotation=arguments,
-                    adapters_repo=adapters_repo,    
-                    baseline=baseline,
-                    orchestration=orchestration,
-                )
-        else:
-            handle = inference_vllm.spawn(
-                model,
-                few_shot_n=shots,
+        # gre_models_small = ["google/gemma-3-12b-it"]
+        gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "google/gemma-3-27b-it"]
+        # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
+        if model != "":
+            gre_models_small = [model]
+        for gre_model in gre_models_small:
+            inference_vllm.spawn(
+                gre_model,
+                run_folder=run_folder,
+                few_shot_n=shots,   
                 limit=limit,
                 add_argument_annotation=arguments,
                 adapters_repo=adapters_repo,    
                 baseline=baseline,
                 orchestration=orchestration,
+                judge=judge,
             )
-            handle.get()

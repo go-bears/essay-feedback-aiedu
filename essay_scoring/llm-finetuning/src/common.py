@@ -1,6 +1,7 @@
 import os
 from pathlib import PurePosixPath
 from typing import Union
+from pydantic import BaseModel
 
 import modal
 
@@ -79,6 +80,7 @@ This is the student essay you have to score.
 </student_essay>
 """
     output_format = """
+Your output should be a JSON in the following format:
 {
     "score": (your generated score),
     "feedback": (your generated feedback)
@@ -95,40 +97,6 @@ This is the student essay you have to score.
 ### Response:
 {}"""
 
-
-class GREGeneralGraderPrompts(GREBasePrompts):
-    system_prompt = """
-You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
-Please provide a numerical score for the provided essay according to the specified rubric.
-
-- Provide an appropriate holistic score.
-- You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
-- You will reason carefully as to why you chose this score following the rubric and guidelines.
-- You will provide a detailed explanation of your reasoning for the score.
-- You will provide feedback for the student on how to improve their essay.
-- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
-
-The rubric or rubrics for this essay is as follows:
-<rubric>
-{rubric}
-</rubric>
-
-The given task is as follows:
-<task_directions>
-{task_directions}
-</task_directions>
-
-The prompt is as follows:
-<essay_prompt>
-{prompt}
-</essay_prompt>
-
-Review the given rubric and prompt carefully and score the <student_essay>.
-Provide a numerical score by using the provided rubric's guidance.
-Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
-
-{output_format}
-"""
     rubric = """
 Score 6
 In addressing the specific task directions, a
@@ -247,6 +215,197 @@ in a foreign language, merely copies the topic,
 consists of only keystroke characters, or is illegible or
 nonverbal.
 """
+
+
+
+class BasicJudgePrompts(GREBasePrompts):
+    system_prompt = """
+You are an expert professional grader who specializes in evaluating feedback from expert graders.
+You will be given two feedbacks for an essay crafted by two expert graders, and will choose the better feedback.
+
+- You will carefully read the two feedbacks (<feedback_1> and <feedback_2>), the essay (<student_essay>), and the rubric (<rubric>).
+- You will reason carefully as to which feedback is more accurate and helpful to the student and why.
+- You will choose the better feedback (<feedback_1> or <feedback_2>) and provide a detailed explanation of your reasoning for the choice.
+
+The rubric for the essay is as follows:
+<rubric>
+{rubric}
+</rubric>
+
+The two feedbacks are as follows:
+<feedback_1>
+{feedback_1}
+</feedback_1>
+
+<feedback_2>
+{feedback_2}
+</feedback_2>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+The student essay is as follows:
+<student_essay>
+{student_essay}
+</student_essay>
+
+Provide a number (1 or 2) representing the feedback that you choose.
+
+{output_format}
+"""
+    output_format = """
+Your output should be a JSON in the following format:
+{
+    "feedback_choice": (1 or 2)
+}
+"""
+
+    @classmethod
+    def dump_prompts(cls) -> dict:
+        return {
+            "system_prompt": cls.system_prompt,
+            "output_format": cls.output_format,
+        }
+    
+    @classmethod
+    def format_prompt_judge(cls, feedback_1, feedback_2, student_essay, task_directions, prompt) -> str:
+        return cls.system_prompt.format(
+            feedback_1=feedback_1,
+            feedback_2=feedback_2,
+            student_essay=student_essay,
+            rubric=cls.rubric,
+            task_directions=task_directions,
+            prompt=prompt,
+            output_format=cls.output_format,
+        )
+
+
+class RubricJudgePrompts(BasicJudgePrompts):
+    system_prompt = """
+You are an expert professional grader who specializes in evaluating feedback from expert graders.
+You will be given two feedbacks for an essay crafted by two expert graders. 
+You will choose the better feedback (<feedback_1> or <feedback_2>) for each of the criteria specified in <criteria>.
+
+<criteria>
+- C1: Which feedback is more relevant to the essay content?
+- C2: Which feedback is better at highlighting weakness?
+- C3: Which feedback is better at highlighting strengths?
+- C4: Which feedback is more specific and actionable?
+- C5: Which feedback is overall more helpful for a student?
+</criteria>
+
+The rubric for the essay is as follows:
+<rubric>
+{rubric}
+</rubric>
+
+The two feedbacks are as follows:
+<feedback_1>
+{feedback_1}
+</feedback_1>
+
+<feedback_2>
+{feedback_2}
+</feedback_2>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+The student essay is as follows:
+<student_essay>
+{student_essay}
+</student_essay>
+
+Provide a number (1 or 2) representing the feedback that you choose for each of the criteria.
+
+{output_format}
+"""
+    output_format = """
+Your output should be a JSON in the following format:
+{
+    "c1": (1 or 2),
+    "c2": (1 or 2),
+    "c3": (1 or 2),
+    "c4": (1 or 2),
+    "c5": (1 or 2)
+}
+"""
+    class ResponseModel(BaseModel):
+        c1: int
+        c2: int
+        c3: int
+        c4: int
+        c5: int
+
+    @classmethod
+    def dump_prompts(cls) -> dict:
+        return {
+            "system_prompt": cls.system_prompt,
+            "output_format": cls.output_format,
+        }
+    
+    @classmethod
+    def format_prompt_judge(cls, feedback_1, feedback_2, student_essay, task_directions, prompt) -> str:
+        return cls.system_prompt.format(
+            feedback_1=feedback_1,
+            feedback_2=feedback_2,
+            student_essay=student_essay,
+            rubric=cls.rubric,
+            task_directions=task_directions,
+            prompt=prompt,
+            output_format=cls.output_format,
+        )
+
+
+
+class GREGeneralGraderPrompts(GREBasePrompts):
+    system_prompt = """
+You are an expert professional grader who scores student essays tagged <student_essay> based on a rubric. 
+Please provide a numerical score for the provided essay according to the specified rubric.
+
+- Provide an appropriate holistic score.
+- You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
+- You will reason carefully as to why you chose this score following the rubric and guidelines.
+- You will provide a detailed explanation of your reasoning for the score.
+- You will provide feedback for the student on how to improve their essay.
+- A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
+
+The rubric or rubrics for this essay is as follows:
+<rubric>
+{rubric}
+</rubric>
+
+The given task is as follows:
+<task_directions>
+{task_directions}
+</task_directions>
+
+The prompt is as follows:
+<essay_prompt>
+{prompt}
+</essay_prompt>
+
+Review the given rubric and prompt carefully and score the <student_essay>.
+Provide a numerical score by using the provided rubric's guidance.
+Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
+
+{output_format}
+"""
+    
 
     @classmethod
     def dump_prompts(cls) -> dict:
@@ -690,3 +849,4 @@ class Colors:
     GRAY = "\033[0;90m"
     BOLD = "\033[1m"
     END = "\033[0m"
+    RED = "\033[0;31m"
