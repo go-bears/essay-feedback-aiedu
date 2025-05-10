@@ -15,12 +15,13 @@ from .common import (
     HOURS,
     Colors,
     SUPPORTED_MODELS,
-    format_prompt_inference_iter1,
-    format_prompt_inference_ft,
     GREGeneralGraderPrompts,
     GREAgentPrompts,
     GREOrchestratorPrompts,
     RubricJudgePrompts,
+    ASAPGeneralGraderPrompts,
+    ASAPAgentAlphaPrompts,
+    ASAPOrchestratorPrompts,
 )
 
 INFERENCE_GPU_CONFIG = "A100-80GB:4"
@@ -33,38 +34,7 @@ else:
 
 N_CLASSES = 6
 
-ASAPResults = dict[int, list[tuple[int, int]]]
-GREResults = list[int]
 
-
-def compute_kappa_summary(truth_dict: ASAPResults, pred_dict: ASAPResults) -> dict:
-    from sklearn.metrics import cohen_kappa_score
-
-    results: dict[str, float | tuple[float, float]] = dict()
-    avg_qwk = 0
-    for essay_set in truth_dict:
-        try:
-            if essay_set == 2:
-                truth_1 = [tup[0] for tup in truth_dict[essay_set]]
-                pred_1 = [tup[0] for tup in pred_dict[essay_set]]
-                truth_2 = [tup[1] for tup in truth_dict[essay_set]]
-                pred_2 = [tup[1] for tup in pred_dict[essay_set]]
-                qwk_1 = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
-                qwk_2 = cohen_kappa_score(truth_2, pred_2, weights="quadratic")
-                results[str(essay_set)] = (qwk_1, qwk_2)
-                avg_qwk += (qwk_1 + qwk_2) / 2
-            else:
-                truth_1 = [tup[0] for tup in truth_dict[essay_set]]
-                pred_1 = [tup[0] for tup in pred_dict[essay_set]]
-                qwk = cohen_kappa_score(truth_1, pred_1, weights="quadratic")
-                results[str(essay_set)] = qwk
-                avg_qwk += qwk
-        except Exception as e:
-            print("Error computing Kappa")
-            print(e)
-    avg_qwk /= N_CLASSES
-    results["avg"] = avg_qwk
-    return results
 
 
 def try_extract_key(key: str, text: str, dtype: Optional[type] = str) -> Optional[Any]:
@@ -99,43 +69,6 @@ def try_extract_key(key: str, text: str, dtype: Optional[type] = str) -> Optiona
             # print(e)
             continue
     return None
-
-def extract_domain_score(text: str, domain: int) -> Optional[int]:
-    # Step 1: Find JSON objects in the string
-    # This pattern looks for text that starts with { and ends with }
-    json_pattern = r"{(?:[^{}]|(?:{[^{}]*}))*}"
-
-    # Step 2: Extract the value for domain_1_score key
-    domain_score_key = f"domain_{domain}_score"
-
-    domain_score_pattern = rf'(?:"{domain_score_key}"|\'{domain_score_key}\'|""{domain_score_key}"")\s*:\s*([0-9.]+)'
-
-    # Find all potential JSON objects
-    json_matches = re.findall(json_pattern, text)
-
-    for potential_json in json_matches:
-        try:
-            # Alternative: use regex to extract the value
-            match = re.search(domain_score_pattern, potential_json)
-            if match:
-                try:
-                    return int(match.group(1))
-                except Exception as e:
-                    pass
-
-            # Try to parse as JSON to validate
-            json_obj = json.loads(potential_json)
-            # Check if our key exists directly
-            if f"domain_{domain}_score" in json_obj:
-                return int(json_obj[f"{domain_score_key}"])
-
-        except Exception as e:
-            # Not valid JSON, continue to next match
-            # print("Error extracting domain score")
-            # print(e)
-            continue
-    return None
-
 
 vllm_image = (
     modal.Image.from_registry("nvidia/cuda:12.1.0-base-ubuntu22.04", add_python="3.10")
@@ -283,7 +216,7 @@ def prompt_processing_asap(content: str, essay_set: int):
     #     ground_truths[essay_set].append(grader_score)
     pass
 
-def compute_kappa(ground_truths: GREResults, predicted_results: GREResults) -> float:
+def compute_kappa(ground_truths: list[int], predicted_results: list[int]) -> float:
     from sklearn.metrics import cohen_kappa_score
     # Drop na's
     ground_truths = np.array(ground_truths)
@@ -292,6 +225,30 @@ def compute_kappa(ground_truths: GREResults, predicted_results: GREResults) -> f
     ground_truths = ground_truths[mask_complete]
     predicted_results = predicted_results[mask_complete]
     return round(cohen_kappa_score(ground_truths, predicted_results, weights="quadratic"), 4)
+
+def compute_kappa_summary_per_essay_set(truth_dict: defaultdict[int, list[int]], pred_dict: defaultdict[int, list[int]]) -> dict[str, float]:
+    results: dict[str, float] = dict()
+    avg_qwk = 0
+    for essay_set in truth_dict:
+        qwk = compute_kappa(truth_dict[essay_set], pred_dict[essay_set])
+        results[str(essay_set)] = qwk
+        avg_qwk += qwk
+    avg_qwk /= N_CLASSES
+    results["avg"] = avg_qwk
+    return results
+
+def compute_kappa_summary_per_domain(truth_dict: defaultdict[str, list[int]], pred_dict: defaultdict[str, list[int]]) -> dict[str, float]:
+    assert len(truth_dict) == len(pred_dict) == 5
+    results: dict[str, float] = dict()
+    avg_qwk = 0
+    for domain in truth_dict:
+        qwk = compute_kappa(truth_dict[domain], pred_dict[domain])
+        results[str(domain)] = qwk
+        avg_qwk += qwk
+    avg_qwk /= len(truth_dict)
+    results["avg"] = avg_qwk
+    return results
+
 
 def inference_loop_baseline(
     run_folder: str,
@@ -313,8 +270,8 @@ def inference_loop_baseline(
         run_folder = run_folder + "/no-argument-annotation"
     os.makedirs(run_folder, exist_ok=True)
 
-    results: GREResults = []
-    ground_truths: GREResults = []
+    results: list[int] = []
+    ground_truths: list[int] = []
     results_feedback: list[str] = []
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
     none_count = 0
@@ -403,6 +360,280 @@ def inference_loop_baseline(
         llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
     return output
 
+def inference_loop_baseline_asap(
+    run_folder: str,
+    inference: UnifiedInference,
+    few_shot_n: int = 0,
+    limit: Optional[int] = None,
+    add_argument_annotation: bool = False,
+    adapters_repo: str = "",
+) -> dict:
+    from datasets import load_dataset
+    import time
+    import pandas as pd
+    from sklearn.metrics import cohen_kappa_score
+    
+    if add_argument_annotation:
+        run_folder = run_folder + "/with-argument-annotation"
+    else:
+        run_folder = run_folder + "/no-argument-annotation"
+    os.makedirs(run_folder, exist_ok=True)
+
+    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+    none_count = 0
+
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap-plus", split="train")
+    n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
+    times = np.zeros((n + 1, 1), dtype=np.float32)
+
+    results_per_essay_set: defaultdict[int, list[int]] = defaultdict(list)
+    ground_truths_per_essay_set: defaultdict[int, list[int]] = defaultdict(list)
+
+    for idx, grading_instruction in enumerate(eval_dataset):
+        start_time = time.time()
+        essay_set = grading_instruction["essay_set"]
+        ground_truths_per_essay_set[essay_set].append(int(grading_instruction["score"]))
+        
+
+        full_prompt = ASAPGeneralGraderPrompts.format_prompt_inference(grading_instruction, add_argument_annotation=add_argument_annotation)
+        
+        # Use the unified inference interface
+        content = inference.generate(full_prompt)
+
+        out_str = (
+            "=" * 30
+            + f"Interaction {idx}"
+            + "=" * 30
+            + "\nPrompt:\n"
+            + full_prompt
+            + "\n\n"
+            + "Response:\n"
+            + content
+            + "\n\n"
+        )
+
+        # Log the output
+        print(out_str)
+        raw_outputs.write(out_str)
+
+        # Prompt processing
+        score = try_extract_key("score", content, dtype=int)
+        if score is None:
+            results_per_essay_set[essay_set].append(score)
+            none_count += 1
+            continue
+        results_per_essay_set[essay_set].append(score)
+        
+        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
+        # Periodic writes
+        if idx % 10 == 0:
+            with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
+                output = {
+                    "grader_prompts": ASAPGeneralGraderPrompts.dump_prompts(),
+                    "qwk_summary": compute_kappa_summary(ground_truths_per_essay_set, results_per_essay_set),
+                    "predicted_labels": {
+                        "scores": results_per_essay_set,
+                    },
+                    "ground_truths": ground_truths_per_essay_set,
+                    "avg_time_ms": float(np.average(times)),
+                    "sample_size": idx,
+                    "none_count": none_count,
+                }
+                json.dump(output, tmp_outs)
+                VOLUME_CONFIG["/runs"].commit()
+
+    # Store data in a traceable format
+    output = {
+        "grader_prompts": ASAPGeneralGraderPrompts.dump_prompts(),
+        "qwk_summary": compute_kappa_summary(ground_truths_per_essay_set, results_per_essay_set),
+        "predicted_labels": {
+            "scores": results_per_essay_set,
+        },
+        "ground_truths": ground_truths_per_essay_set,
+        "avg_time_ms": float(np.average(times)),
+        "sample_size": idx,
+        "none_count": none_count,
+    }
+    outfile = open(os.path.join(run_folder, "run.json"), "w")
+    json.dump(output, outfile)
+    outfile.close()
+    raw_outputs.close()
+    tmp_outs.close()
+    VOLUME_CONFIG["/runs"].commit()
+    return output
+
+
+def inference_loop_orchestration_asap(
+    run_folder: str,
+    inference: UnifiedInference,
+    few_shot_n: int = 0,
+    limit: Optional[int] = None,
+    add_argument_annotation: bool = False,
+    adapters_repo: str = "",
+) -> dict:
+    from datasets import load_dataset
+    import time
+    import pandas as pd
+    from sklearn.metrics import cohen_kappa_score
+    import json
+
+    if add_argument_annotation:
+        run_folder = run_folder + "/with-argument-annotation"
+    else:
+        run_folder = run_folder + "/no-argument-annotation"
+    os.makedirs(run_folder, exist_ok=True)
+
+    orchestrated_results: list[int] = []
+   
+    ground_truths: list[int] = []
+    raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
+    none_count = 0
+
+    eval_dataset = load_dataset("jjordanoc/argumentative-asap-plus", split="train")
+
+    # Per essay set to compute orchestrated score
+    results_per_essay_set: defaultdict[int, list[list]] = defaultdict(list)
+    ground_truths_per_essay_set: defaultdict[int, list[int]] = defaultdict(list)
+
+    # Per essay set per domain just in case
+    results_per_essay_set_per_domain: defaultdict[int, list[list[int]]] = defaultdict(list)
+    ground_truths_per_essay_set_per_domain: defaultdict[int, list[list[int]]] = defaultdict(list)
+
+    # Per domain to compute domain scores
+    results_per_domain: defaultdict[str, list[int]] = defaultdict(list)
+    ground_truths_per_domain: defaultdict[str, list[int]] = defaultdict(list)
+
+    averaged_scores_per_essay_set: defaultdict[int, list[int]] = defaultdict(list)
+
+    n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
+    times = np.zeros((n + 1, 1), dtype=np.float32)
+
+    for idx, grading_instruction in enumerate(eval_dataset):
+        start_time = time.time()
+        # Has to be here to match length of orchestrated_results
+        essay_set = grading_instruction["essay_set"]
+        ground_truths_per_essay_set[essay_set].append(int(grading_instruction["score"]))
+
+        trait_scores = grading_instruction["trait_scores"]
+        ground_truths_current_essay_set = []
+        for aspect in trait_scores:
+            ground_truths_per_domain[aspect].append(trait_scores[aspect])
+            ground_truths_current_essay_set.append(trait_scores[aspect])
+        ground_truths_per_essay_set_per_domain[essay_set].append(ground_truths_current_essay_set)
+
+        domain_scores_current_essay_set: list[int] = []
+        domain_responses: list[str] = []
+        
+        for rubric_item, aspect_name in zip([1, 2, 3, 4, 5], ASAPAgentAlphaPrompts.aspect_names):
+            full_prompt = ASAPAgentAlphaPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
+            
+            # Use the unified inference interface
+            content = inference.generate(full_prompt)
+
+            out_str = (
+                "=" * 30
+                + f"Domain {rubric_item}"
+                + "=" * 30
+                + "\nPrompt:\n"
+                + full_prompt
+                + "\n\n"
+                + "Response:\n"
+                + content
+                + "\n\n"
+            )
+
+            # Log the output
+            raw_outputs.write(out_str)
+
+            # Prompt processing
+            score = try_extract_key("score", content, dtype=int)
+            if score is None:
+                results_per_domain[aspect_name].append(np.nan)
+                domain_scores_current_essay_set.append(np.nan)
+                none_count += 1
+                continue
+            results_per_domain[aspect_name].append(score)
+            domain_scores_current_essay_set.append(score)
+            domain_responses.append(content)
+
+        print(Colors.GREEN + Colors.BOLD + f"Scores per domain:  {domain_scores_current_essay_set}" + Colors.END)
+        results_per_essay_set_per_domain[essay_set].append(domain_scores_current_essay_set)
+        avg_domain_score = np.nan if np.isnan(np.nanmean(list(domain_scores_current_essay_set))) else round(np.nanmean(list(domain_scores_current_essay_set)))
+        # Orchestration
+        full_prompt = ASAPOrchestratorPrompts.format_prompt_inference(grading_instruction, domain_responses)
+        content = inference.generate(full_prompt)
+        out_str = (
+                "=" * 30
+                + f"Interaction {idx}"
+                + "=" * 30
+                + "\nPrompt:\n"
+                + full_prompt
+                + "\n\n"
+                + "Response:\n"
+                + content
+                + "\n\n"
+            )
+        # Log the output
+        raw_outputs.write(out_str)
+
+        # Prompt processing
+        score = try_extract_key("score", content, dtype=int)
+        averaged_scores_per_essay_set[essay_set].append(avg_domain_score)
+        print(Colors.GREEN + Colors.BOLD + f"Averaged scores: {averaged_scores_per_essay_set}" + Colors.END)
+        if score is None:
+            orchestrated_results.append(np.nan)
+            none_count += 1
+            continue
+        results_per_essay_set[essay_set].append(score)
+        print(Colors.GREEN + Colors.BOLD + f"Orchestrated scores: {results_per_essay_set}" + Colors.END)
+
+        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
+        # Periodic writes
+        if (idx+1) % 10 == 0:
+            with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
+                output = {
+                    "orchestrator_prompts": ASAPOrchestratorPrompts.dump_prompts(),
+                    "agent_prompts": ASAPAgentAlphaPrompts.dump_prompts(),
+                    "qwk_orchestrator_summary": compute_kappa_summary_per_essay_set(ground_truths_per_essay_set, results_per_essay_set),
+                    "qwk_average_summary": compute_kappa_summary_per_essay_set(ground_truths_per_essay_set, averaged_scores_per_essay_set),
+                    "qwk_per_domain_summary": compute_kappa_summary_per_domain(ground_truths_per_domain, results_per_domain),
+                    "predicted_labels": {
+                        "results_per_essay_set_per_domain": results_per_essay_set_per_domain,
+                        "results_per_essay_set": results_per_essay_set,
+                        "results_per_domain": results_per_domain,
+                    },
+                    "ground_truths": ground_truths_per_essay_set,
+                    "avg_time_ms": float(np.average(times)),
+                    "sample_size": idx,
+                    "none_count": none_count,
+                }
+                json.dump(output, tmp_outs)
+                VOLUME_CONFIG["/runs"].commit()
+
+    # Store data in a traceable format
+    output = {
+        "orchestrator_prompts": ASAPOrchestratorPrompts.dump_prompts(),
+        "agent_prompts": ASAPAgentAlphaPrompts.dump_prompts(),
+        "qwk_orchestrator_summary": compute_kappa_summary_per_essay_set(ground_truths_per_essay_set, results_per_essay_set),
+        "qwk_average_summary": compute_kappa_summary_per_essay_set(ground_truths_per_essay_set, averaged_scores_per_essay_set),
+        "qwk_per_domain_summary": compute_kappa_summary_per_domain(ground_truths_per_domain, results_per_domain),
+        "predicted_labels": {
+            "results_per_essay_set_per_domain": results_per_essay_set_per_domain,
+            "results_per_essay_set": results_per_essay_set,
+            "results_per_domain": results_per_domain,
+        },
+        "ground_truths": ground_truths_per_essay_set,
+        "avg_time_ms": float(np.average(times)),
+        "sample_size": idx,
+        "none_count": none_count,
+    }
+    outfile = open(os.path.join(run_folder, "run.json"), "w")
+    json.dump(output, outfile)
+    outfile.close()
+    raw_outputs.close()
+    tmp_outs.close()
+    VOLUME_CONFIG["/runs"].commit()
+    return output
 
 def inference_loop_orchestration(
     run_folder: str,
@@ -424,13 +655,13 @@ def inference_loop_orchestration(
         run_folder = run_folder + "/no-argument-annotation"
     os.makedirs(run_folder, exist_ok=True)
 
-    orchestrated_results: GREResults = []
-    results_per_domain: list[GREResults] = []
+    orchestrated_results: list[int] = []
+    results_per_domain: list[list[int]] = []
     orchestrated_feedbacks: list[str] = []
     feedbacks_per_domain: list[list[str]] = []
     averaged_scores = []
 
-    ground_truths: GREResults = []
+    ground_truths: list[int] = []
     raw_outputs = open(os.path.join(run_folder, "raw_outputs.txt"), "w")
     none_count = 0
 
@@ -564,7 +795,7 @@ def inference_loop_orchestration(
         llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
     return output
 
-def linear_regression_analysis(run_folder: str, results_per_domain: list[GREResults], ground_truths: list[int]):
+def linear_regression_analysis(run_folder: str, results_per_domain: list[list[int]], ground_truths: list[int]):
     """
     Merge results from different domains into a single regression model.
     """
@@ -702,6 +933,7 @@ def inference_vllm(
     orchestration: bool = False,
     judge: bool = False,
     run_folder: str = "",
+    asap: bool = False,
 ):
     from datetime import datetime
     import numpy as np
@@ -716,6 +948,24 @@ def inference_vllm(
     inference_engine = UnifiedInference(
         model_name=model_handle, adapters_repo=adapters_repo
     )
+    if asap:
+        # inference_loop_baseline_asap(
+        #     run_folder=baseline_folder,
+        #     inference=inference_engine,
+        #     few_shot_n=few_shot_n,
+        #     limit=limit,
+        #     add_argument_annotation=False,
+        #     adapters_repo=adapters_repo,
+        # ) 
+        inference_loop_orchestration_asap(
+            run_folder=orchestration_folder,
+            inference=inference_engine,
+            few_shot_n=few_shot_n,
+            limit=limit,
+            add_argument_annotation=False,
+            adapters_repo=adapters_repo,
+        )
+
     if baseline:
         inference_loop_baseline(
             run_folder=baseline_folder,
@@ -771,6 +1021,7 @@ def inference_main(
     orchestration: bool = False,
     judge: bool = False,
     judge_run: str = "",
+    asap: bool = False,
 ):
     from datetime import datetime
     if model in SUPPORTED_MODELS:
@@ -815,4 +1066,5 @@ def inference_main(
                 baseline=baseline,
                 orchestration=orchestration,
                 judge=judge,
+                asap=asap,
             )
