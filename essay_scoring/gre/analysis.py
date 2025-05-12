@@ -15,41 +15,19 @@ labels = data["labels"]
 for i in range(len(matrix)):
     matrix[i][i] = 0.5
 
-# 1) Wrap each label after, say, 20 characters
-wrapped_labels = [
-    "\n".join(textwrap.wrap(lbl, width=20, break_long_words=False))
-    for lbl in labels
-]
-
-# 2) Plot as before, but with the wrapped labels
-fig, ax = plt.subplots(figsize=(8, 8))
+# 2) Plot
 sns.heatmap(
     matrix,
-    annot=True,
-    fmt=".2f",
-    cmap="Greens",
-    xticklabels=wrapped_labels,
-    yticklabels=wrapped_labels,
-    cbar_kws={"shrink": 0.8},
-    ax=ax
+    annot=True,                # show values in cells
+    fmt=".2f",                 # number format
+    cmap="Greens",            # any matplotlib colormap
+    xticklabels=labels,    # use your column labels
+    yticklabels=labels     # use your row labels
 )
 
-# 3) Move labels to the top, rotate at 45°, shrink font
-ax.xaxis.tick_top()
-ax.set_xticklabels(
-    wrapped_labels,
-    rotation=0,
-    ha="center",
-    fontsize=8
-)
-ax.set_yticklabels(
-    wrapped_labels,
-    rotation=0,
-    va="center",
-    fontsize=8
-)
+# 3) Tweak and show
+# plt.gca().xaxis.tick_top()        # move x-labels to the top
 
+plt.xticks(rotation=45, ha="right")
 plt.tight_layout()
 plt.show()
-
-

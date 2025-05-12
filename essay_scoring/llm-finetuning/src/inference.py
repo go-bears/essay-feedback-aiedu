@@ -218,12 +218,17 @@ def prompt_processing_asap(content: str, essay_set: int):
 
 def compute_kappa(ground_truths: list[int], predicted_results: list[int]) -> float:
     from sklearn.metrics import cohen_kappa_score
+    # Convert None to np.nan
+    ground_truths = [np.nan if x is None else x for x in ground_truths]
+    predicted_results = [np.nan if x is None else x for x in predicted_results]
     # Drop na's
     ground_truths = np.array(ground_truths)
     predicted_results = np.array(predicted_results)
     mask_complete = ~np.isnan(predicted_results)
-    ground_truths = ground_truths[mask_complete]
-    predicted_results = predicted_results[mask_complete]
+    mask_complete_ground_truths = ~np.isnan(ground_truths)  # ignore missing ground truths
+    print( Colors.RED + Colors.BOLD + "{} incomplete ground truths, {} incomplete predictions".format(np.sum(~mask_complete_ground_truths), np.sum(~mask_complete)) + Colors.END)
+    ground_truths = ground_truths[mask_complete & mask_complete_ground_truths]
+    predicted_results = predicted_results[mask_complete & mask_complete_ground_truths]
     return round(cohen_kappa_score(ground_truths, predicted_results, weights="quadratic"), 4)
 
 def compute_kappa_summary_per_essay_set(truth_dict: defaultdict[int, list[int]], pred_dict: defaultdict[int, list[int]]) -> dict[str, float]:
@@ -1032,9 +1037,11 @@ def llm_as_judge_helper(tag1: str, tag2: str, feedbacks1: list[str], feedbacks2:
     cpu=1.0,
 )
 def gre_qwk_analysis(gre_analysis_run_folder: str):
+    from datasets import load_dataset
     os.makedirs(gre_analysis_run_folder, exist_ok=True)
     csv_file = f"{gre_analysis_run_folder}/gre_analysis.csv"
     domain_names = ",".join(str(i) for i in range(1, 6))
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
     with open(csv_file, "w") as f:
         f.write(f"model,{domain_names}\n")
     for folder, alias in [("vllm-google-gemma-3-12b-it-2025-05-07-21-19-20-2084", "gemma-3-12b-it"), ("vllm-meta-llama-Llama-3.3-70B-Instruct-2025-05-07-21-42-06-1a7e", "llama3.3-70b-it")]:
@@ -1045,7 +1052,6 @@ def gre_qwk_analysis(gre_analysis_run_folder: str):
                 with open(f"/runs/{run_folder}/run.json", "r") as f:
                     output = json.load(f)
                     scores_per_domain_list = output["predicted_labels"]["scores_per_domain"]
-                    ground_truths = output["ground_truths"] # always the same
                 # qwk_matrix will have rows = domains, cols = scores per domain
                 # initialize with 5 empty lists
                 qwk_matrix = [[] for _ in range(5)]
@@ -1055,6 +1061,7 @@ def gre_qwk_analysis(gre_analysis_run_folder: str):
                 print(Colors.GREEN + Colors.BOLD + f"QWK Matrix: {qwk_matrix}" + Colors.END)
                 domain_qwks = []
                 for domain_idx in range(len(qwk_matrix)):
+                    ground_truths = eval_dataset["aspect_" + str(domain_idx + 1)]
                     domain_qwk = compute_kappa(ground_truths, qwk_matrix[domain_idx])
                     domain_qwks.append(domain_qwk)
                 domain_qwks_str = ",".join([str(round(qwk, 3)) for qwk in domain_qwks])   
