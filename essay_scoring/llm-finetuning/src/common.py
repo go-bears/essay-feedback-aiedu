@@ -467,6 +467,8 @@ Remember, a low score isn't harmful to the student. Rather, an accurate match to
 {output_format}
 """
 
+    
+
     @classmethod
     def dump_prompts(cls) -> dict:
         return {
@@ -509,6 +511,8 @@ class ASAPGeneralGraderPrompts(BasePrompts):
 - The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
 - Provide an appropriate score for limited timed test conditions where there is little to no time for revision.
 - These essays were written by students ranging in grade levels from Grade 7 to Grade 10 (ages 11-16).
+- Use your understanding of the capabilities of 7th to 10th graders to score the essay appropriately.
+- The length of the essay matters, a well developed essay should have at least 3-4 well written paragraphs.
 """
 
     system_prompt = """
@@ -516,10 +520,9 @@ You are an expert professional grader who scores student essays tagged <student_
 Please provide a numerical score for the provided essay according to the specified rubric.
 
 - Provide an appropriate holistic score.
-- The essay has been anonymized by replacing revealing details with tags that start with '@' and all letters are capitalized, such as '@ORGANIZATION1', '@CAPS2', '@DATE1', and etc. Do not penalize this. 
 - You will carefully read the rubric (<rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
-- You will provide a detailed explanation of your reasoning for the score.
+- You will provide a detailed step-by-step explanation of your reasoning for the score.
 - A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 {dataset_specific_instructions}
 
@@ -752,6 +755,27 @@ Your output should be a JSON in the following format:
 }
 """
 
+    calibration_examples = """
+<example_essay>
+{example_essay_1}
+</example_essay>
+
+<example_score>
+{example_score_1}
+</example_score>
+
+<example_essay>
+{example_essay_2}
+</example_essay>
+
+<example_score>
+{example_score_2}
+</example_score>
+"""
+
+    
+
+
     @classmethod
     def dump_prompts(cls) -> dict:
         return {
@@ -828,8 +852,7 @@ Remember, a low score isn't harmful to the student. Rather, an accurate match to
     @classmethod
     def format_prompt_inference(cls, grading_instruction, domain_outputs) -> str:
         expert_grader_scores_and_reasoning = ""
-        for domain_output, aspect_rubric in zip(domain_outputs, ASAPAgentAlphaPrompts.aspect_rubrics):
-            aspect_name = aspect_rubric.strip().split(".", 1)[0] + "."
+        for domain_output, aspect_name in zip(domain_outputs, ASAPAgentAlphaPrompts.aspect_names):
             expert_grader_scores_and_reasoning += f"""
 <expert_grader_judgement>
 {aspect_name}
@@ -1118,10 +1141,9 @@ You specialize in scoring {aspect_name}.
 Please provide a numerical score for the provided essay considering the specified rubric for {aspect_name}.
 
 - Provide an appropriate holistic {aspect_name} score.
-- The length of the essay matters, a well developed essay should have at least 3-4 well written paragraphs.
 - You will carefully read the rubric (<{aspect_name}_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
-- You will provide a detailed explanation of your reasoning for the score.
+- You will provide a detailed step-by-step explanation of your reasoning for the score.
 - A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 {dataset_specific_instructions}
 
@@ -1144,6 +1166,8 @@ Review the given rubric and prompt carefully and score the <student_essay>.
 Provide a numerical score by using the provided rubric's guidance for {aspect_name}. The score should be a number between {score_range}.
 Remember, a low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
+{example_output}
+
 {output_format}
 """
 
@@ -1159,18 +1183,26 @@ Remember, a low score isn't harmful to the student. Rather, an accurate match to
         }
 
     @classmethod
-    def format_prompt_inference(cls, grading_instruction, agent_rubric_item: int, add_argument_annotation: bool = False) -> str:
+    def format_prompt_inference(cls, grading_instruction, agent_rubric_item: int, add_argument_annotation: bool = False, calibration_examples = None) -> str:
+        aspect_name = cls.aspect_names[agent_rubric_item-1]
+        examples = cls.calibration_examples.format(
+            example_essay_1=calibration_examples["essay_text"][0],
+            example_score_1=calibration_examples["trait_scores"][0][aspect_name],
+            example_essay_2=calibration_examples["essay_text"][1],
+            example_score_2=calibration_examples["trait_scores"][1][aspect_name],
+        ) if calibration_examples is not None else ""
         # By default, use the essay text
         essay_text = grading_instruction["essay_text"]
         assert agent_rubric_item in [1, 2, 3, 4, 5]
         system_prompt_formatted = cls.per_trait_system_prompt.format(
-            aspect_name=cls.aspect_names[agent_rubric_item-1],
+            aspect_name=c,
             aspect_rubric=cls.aspect_rubrics[agent_rubric_item-1],
             prompt=grading_instruction["prompt"],
             task_directions=grading_instruction["task_directions"],
             output_format=cls.output_format,
             score_range=cls.score_range,
             dataset_specific_instructions=cls.dataset_specific_instructions,
+            example_output=examples,
         )
         # Use argument annotations if provided (only for argumentative aspects)
         if add_argument_annotation:
@@ -1251,7 +1283,7 @@ Please provide a numerical score for the provided essay considering all aspects 
 - The length of the essay matters, a well developed essay should have at least 3-4 well written paragraphs.
 - You will carefully read the rubric (<argumentative_rubric>), prompt (<essay_prompt>) and student essay (<student_essay>), as many times as needed.
 - You will reason carefully as to why you chose this score following the rubric and guidelines.
-- You will provide a detailed explanation of your reasoning for the score.
+- You will provide a detailed step-by-step explanation of your reasoning for the score.
 - You will provide feedback for the student on how to improve the argumentative qualities of their essay.
 - A low score isn't harmful to the student. Rather, an accurate match to the rubric will help the student improve their score in future essays.
 
@@ -1344,7 +1376,6 @@ Remember, a low score isn't harmful to the student. Rather, an accurate match to
 {output_format}
 """
     
-
     @classmethod
     def dump_prompts(cls) -> dict:
         return {
@@ -1400,34 +1431,34 @@ Remember, a low score isn't harmful to the student. Rather, an accurate match to
 
 
 
-# def format_prompt_training(grading_instruction, eos_token):
-#     essay_set = int(grading_instruction["essay_set"])
-#     system_prompt_formatted = system_prompt.format(
-#         rubric=grading_instruction["rubric"],
-#         prompt=grading_instruction["essay_prompt"],
-#     )
+def format_prompt_training(grading_instruction, eos_token):
+    essay_set = int(grading_instruction["essay_set"])
+    system_prompt_formatted = system_prompt.format(
+        rubric=grading_instruction["rubric"],
+        prompt=grading_instruction["essay_prompt"],
+    )
 
-#     essay_set_prompt_formatted = (
-#         essay_set_2_essay_prompt_instruction
-#         if essay_set == 2
-#         else essay_prompt_instruction
-#     )
-#     output_formatted = (
-#         output_prompt_set_2.format(
-#             domain_1_score=grading_instruction["grader_score"].split(" ")[0],
-#             domain_2_score=grading_instruction["grader_score"].split(" ")[1],
-#         )
-#         if essay_set == 2
-#         else output_prompt.format(domain_1_score=grading_instruction["grader_score"])
-#     )
-#     instructions = system_prompt_formatted + "\n" + essay_set_prompt_formatted
-#     inputs = grading_instruction["essay_text"]
-#     outputs = output_formatted
-#     # Must add EOS_TOKEN, otherwise your generation will go on forever!
-#     text = alpaca_prompt.format(instructions, inputs, outputs) + eos_token
-#     return {
-#         "text": text,
-#     }
+    essay_set_prompt_formatted = (
+        essay_set_2_essay_prompt_instruction
+        if essay_set == 2
+        else essay_prompt_instruction
+    )
+    output_formatted = (
+        output_prompt_set_2.format(
+            domain_1_score=grading_instruction["grader_score"].split(" ")[0],
+            domain_2_score=grading_instruction["grader_score"].split(" ")[1],
+        )
+        if essay_set == 2
+        else output_prompt.format(domain_1_score=grading_instruction["grader_score"])
+    )
+    instructions = system_prompt_formatted + "\n" + essay_set_prompt_formatted
+    inputs = grading_instruction["essay_text"]
+    outputs = output_formatted
+    # Must add EOS_TOKEN, otherwise your generation will go on forever!
+    text = alpaca_prompt.format(instructions, inputs, outputs) + eos_token
+    return {
+        "text": text,
+    }
 
 
 def get_few_shot_examples(train_df, essay_set: int, num: int) -> str:

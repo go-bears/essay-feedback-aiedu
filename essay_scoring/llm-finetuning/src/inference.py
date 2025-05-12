@@ -24,7 +24,7 @@ from .common import (
     ASAPOrchestratorPrompts,
 )
 
-INFERENCE_GPU_CONFIG = "A100-80GB:4"
+INFERENCE_GPU_CONFIG = "A100-80GB:2"
 
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
@@ -490,6 +490,9 @@ def inference_loop_orchestration_asap(
     none_count = 0
 
     eval_dataset = load_dataset("jjordanoc/argumentative-asap-plus", split="train")
+    # few_shot_examples = load_dataset("jjordanoc/argumentative-asap-plus", split="shots")
+
+    # test_dataset = load_dataset("jjordanoc/argumentative-asap", split="test")
 
     # Per essay set to compute orchestrated score
     results_per_essay_set: defaultdict[int, list[list]] = defaultdict(list)
@@ -509,6 +512,9 @@ def inference_loop_orchestration_asap(
     times = np.zeros((n + 1, 1), dtype=np.float32)
 
     for idx, grading_instruction in enumerate(eval_dataset):
+        # TODO: Remove, only held out data
+        # if grading_instruction["essay_id"] not in test_dataset["essay_id"]:
+        #     continue
         start_time = time.time()
         # Has to be here to match length of orchestrated_results
         essay_set = grading_instruction["essay_set"]
@@ -525,8 +531,8 @@ def inference_loop_orchestration_asap(
         domain_responses: list[str] = []
         
         for rubric_item, aspect_name in zip([1, 2, 3, 4, 5], ASAPAgentAlphaPrompts.aspect_names):
-            full_prompt = ASAPAgentAlphaPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
-            
+            full_prompt = ASAPAgentAlphaPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation, calibration_examples=few_shot_examples)
+
             # Use the unified inference interface
             content = inference.generate(full_prompt)
 
@@ -543,6 +549,7 @@ def inference_loop_orchestration_asap(
             )
 
             # Log the output
+            print(out_str)
             raw_outputs.write(out_str)
 
             # Prompt processing
@@ -574,6 +581,7 @@ def inference_loop_orchestration_asap(
                 + "\n\n"
             )
         # Log the output
+        print(out_str)
         raw_outputs.write(out_str)
 
         # Prompt processing
@@ -916,6 +924,201 @@ def llm_as_judge(run_folder: str, feedbacks: list[str] = [], judge_run: str = ""
 
     return results
 
+def llm_as_judge_helper(tag1: str, tag2: str, feedbacks1: list[str], feedbacks2: list[str], run_folder: str):
+    """
+    Use an LLM as a judge to score a set of essays.
+    """
+    from datasets import load_dataset
+    from openai import OpenAI
+    import pandas as pd
+    run_folder = f"{run_folder}/{tag1}_vs_{tag2}"
+    os.makedirs(run_folder, exist_ok=True)
+   
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
+    client = OpenAI()
+    results = []
+    total_tag1_wins = 0
+    total_tag2_wins = 0
+    none_count1 = 0
+    none_count2 = 0
+    assert len(feedbacks1) == len(feedbacks2)
+    for idx, grading_instruction in enumerate(eval_dataset):
+        if feedbacks1[idx] is None:
+            none_count1 += 1
+            continue
+        if feedbacks2[idx] is None:
+            none_count2 += 1
+            continue
+        # Human will be 1, LLM will be 2
+        prompt = RubricJudgePrompts.format_prompt_judge(feedback_1=feedbacks1[idx], 
+                                                  feedback_2=feedbacks2[idx], 
+                                                  student_essay=grading_instruction["essay_text"], 
+                                                  task_directions=grading_instruction["task_directions"],
+                                                  prompt=grading_instruction["prompt"]
+                                                  )
+        print(Colors.BLUE + f"Essay 1: {feedbacks1[idx]}" + Colors.END)
+        print(Colors.RED + f"Essay 2: {feedbacks2[idx]}" + Colors.END)
+        response = client.beta.chat.completions.parse(
+            model="o4-mini",
+            reasoning_effort="high",
+            messages=[
+                {
+                    "role": "user", 
+                    "content": prompt
+                }
+            ],
+            response_format=RubricJudgePrompts.ResponseModel
+        )
+        decision = response.choices[0].message.content
+        tag1_wins = 0
+        tag2_wins = 0
+        try:
+            decision = json.loads(decision)
+            # We do winner takes all
+            for i in range(1, 6):
+                if decision[f"c{i}"] == 1:
+                    tag1_wins += 1
+                else:
+                    tag2_wins += 1
+            # Works because it's odd
+            if tag1_wins > tag2_wins:
+                total_tag1_wins += 1
+            elif tag2_wins > tag1_wins:
+                total_tag2_wins += 1
+            results.append(decision)
+            print(Colors.BOLD + f"Decision: {decision}" + Colors.END)
+        except:
+            print(Colors.RED + Colors.BOLD + f"Error parsing decision: {decision}" + Colors.END)
+
+    print(Colors.GREEN + Colors.BOLD + f"{tag1} wins: {total_tag1_wins}, {tag2} wins: {total_tag2_wins}" + Colors.END)
+
+    win_rate_tag1 = total_tag1_wins / (total_tag1_wins + total_tag2_wins)
+    win_rate_tag2 = total_tag2_wins / (total_tag1_wins + total_tag2_wins)
+
+    output = {
+        "results": results,
+        "none_count1": none_count1,
+        "none_count2": none_count2,
+        "win_rate_tag1": win_rate_tag1,
+        "win_rate_tag2": win_rate_tag2,
+    }
+    with open(os.path.join(run_folder, f"judge_output.json"), "w") as f:
+        json.dump(output, f)
+
+    # Analysis
+    df = pd.DataFrame(results)
+    counts = (
+        df
+        .apply(pd.Series.value_counts)   # rows = values (1,2), cols = c1…c5
+        .fillna(0)
+        .astype(int)
+        .T                                # now rows = c1…c5, cols = 1,2
+    )
+
+    # Compute win_rate = (# of 2s) / (total picks)
+    counts['win_rate'] = counts[2] / (counts[1] + counts[2])
+    counts = counts.rename(columns={1: tag1, 2: tag2})
+    counts.to_csv(os.path.join(run_folder, f"criteria_counts_with_win_rate.csv"))
+    VOLUME_CONFIG["/runs"].commit()
+
+
+    return results, df, win_rate_tag1, win_rate_tag2
+
+
+@inference_app.function(
+    image=vllm_image,
+    timeout=24 * HOURS,
+    volumes=VOLUME_CONFIG,
+    cpu=1.0,
+)
+def gre_qwk_analysis(gre_analysis_run_folder: str):
+    os.makedirs(gre_analysis_run_folder, exist_ok=True)
+    csv_file = f"{gre_analysis_run_folder}/gre_analysis.csv"
+    domain_names = ",".join(str(i) for i in range(1, 6))
+    with open(csv_file, "w") as f:
+        f.write(f"model,{domain_names}\n")
+    for folder, alias in [("vllm-google-gemma-3-12b-it-2025-05-07-21-19-20-2084", "gemma-3-12b-it"), ("vllm-meta-llama-Llama-3.3-70B-Instruct-2025-05-07-21-42-06-1a7e", "llama3.3-70b-it")]:
+        for approach in ["orchestration"]:
+            for arguments in ["with-argument-annotation", "no-argument-annotation"]:
+                run_folder = f"{folder}/{approach}/{arguments}"
+                full_model_alias = f"{alias}-{approach}-{arguments}"
+                with open(f"/runs/{run_folder}/run.json", "r") as f:
+                    output = json.load(f)
+                    scores_per_domain_list = output["predicted_labels"]["scores_per_domain"]
+                    ground_truths = output["ground_truths"] # always the same
+                # qwk_matrix will have rows = domains, cols = scores per domain
+                # initialize with 5 empty lists
+                qwk_matrix = [[] for _ in range(5)]
+                for domain_scores in scores_per_domain_list:
+                    for i in range(5):
+                        qwk_matrix[i].append(domain_scores[i])
+                print(Colors.GREEN + Colors.BOLD + f"QWK Matrix: {qwk_matrix}" + Colors.END)
+                domain_qwks = []
+                for domain_idx in range(len(qwk_matrix)):
+                    domain_qwk = compute_kappa(ground_truths, qwk_matrix[domain_idx])
+                    domain_qwks.append(domain_qwk)
+                domain_qwks_str = ",".join([str(round(qwk, 3)) for qwk in domain_qwks])   
+                print(Colors.BLUE + Colors.BOLD + f"Domain QWK: {domain_qwks_str}" + Colors.END)
+                with open(csv_file, "a") as f:
+                    f.write(f"{full_model_alias},{domain_qwks_str}\n")
+                
+
+@inference_app.function(
+    image=vllm_image,
+    timeout=24 * HOURS,
+    volumes=VOLUME_CONFIG,
+    cpu=4.0,
+)
+def llm_as_judge_matrix(matrix_run_folder: str):
+    """
+    Use an LLM as a judge to score a set of essays.
+    """
+    from datasets import load_dataset
+    from openai import OpenAI
+    import pandas as pd
+    import numpy as np
+    os.makedirs(matrix_run_folder, exist_ok=True)
+
+    eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
+
+    eval_list = [
+        ("human", eval_dataset["essay_feedback"])
+    ]
+
+    # Ablations
+    for folder, alias in [("vllm-google-gemma-3-12b-it-2025-05-07-21-19-20-2084", "gemma-3-12b-it"), ("vllm-meta-llama-Llama-3.3-70B-Instruct-2025-05-07-21-42-06-1a7e", "llama3.3-70b-it")]:
+        for approach in ["baseline", "orchestration"]:
+            for arguments in ["with-argument-annotation", "no-argument-annotation"]:
+                run_folder = f"{folder}/{approach}/{arguments}"
+                full_model_alias = f"{alias}-{approach}-{arguments}"
+                with open(f"/runs/{run_folder}/run.json", "r") as f:
+                    output = json.load(f)
+                    feedbacks = output["predicted_labels"]["feedbacks"]
+                    eval_list.append((full_model_alias, feedbacks))
+    labels = [alias for alias, _ in eval_list]
+    print(Colors.GREEN + Colors.BOLD + f"Recovered feedback from labels: {labels}" + Colors.END)
+    # Results
+    matrix = np.zeros((len(eval_list), len(eval_list)))
+    for idx_1, (alias_1, feedback_1) in enumerate(eval_list):
+        for idx_2, (alias_2, feedback_2) in enumerate(eval_list):
+            # Triangular matrix
+            if idx_1 <= idx_2:
+                continue
+            _, _, win_rate_1, win_rate_2 = llm_as_judge_helper(alias_1, alias_2, feedback_1, feedback_2, matrix_run_folder)
+            # (i,j) is the win-rate of i over j
+            matrix[idx_1, idx_2] = win_rate_1
+            matrix[idx_2, idx_1] = win_rate_2
+
+    print(Colors.BLUE + Colors.BOLD + f"Matrix: {matrix}" + Colors.END)
+
+    output = {
+        "labels": labels,
+        "matrix": matrix.tolist(),
+    }
+    with open(os.path.join(matrix_run_folder, "judge_matrix.json"), "w") as f:
+        json.dump(output, f)
+    VOLUME_CONFIG["/runs"].commit()
+    return output
 
 @inference_app.function(
     image=vllm_image,
@@ -1022,6 +1225,8 @@ def inference_main(
     judge: bool = False,
     judge_run: str = "",
     asap: bool = False,
+    judge_matrix: bool = False,
+    gre_analysis: bool = False,
 ):
     from datetime import datetime
     if model in SUPPORTED_MODELS:
@@ -1046,9 +1251,15 @@ def inference_main(
         Colors.END,
         sep="",
     )
-    if judge and judge_run != "":
+    if gre_analysis:
+        gre_analysis_handle = gre_qwk_analysis.spawn(gre_analysis_run_folder="/runs/gre-analysis")
+        gre_analysis_handle.get()
+    elif judge and judge_run != "":
         judge_handle = llm_as_judge.spawn(run_folder=run_folder, judge_run=judge_run)
         judge_handle.get()
+    elif judge_matrix:
+        judge_matrix_handle = llm_as_judge_matrix.spawn(matrix_run_folder=run_folder)
+        judge_matrix_handle.get()
     else:
         # gre_models_small = ["google/gemma-3-12b-it"]
         gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "google/gemma-3-27b-it"]
