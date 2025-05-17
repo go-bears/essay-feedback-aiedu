@@ -178,44 +178,6 @@ class UnifiedInference:
         return full_response
         
 
-def prompt_processing_asap(content: str, essay_set: int):
-    # try:
-    #     score_1 = extract_domain_score(content, 1)
-    #     score_2 = -1
-    #     print(score_1)
-
-    #     if essay_set == 2:
-    #         score_2 = extract_domain_score(content, 2)
-    #         print(score_2)
-    #     score = (score_1, score_2)
-    # except Exception as e:
-    #     # skip this essay
-    #     print(e)
-    #     return None
-
-    # # Discard from analysis
-    # if score_1 is None or score_2 is None:
-    #     none_count += 1
-    #     return None
-
-    # grader_score_1 = -1
-    # grader_score_2 = -1
-    # if essay_set == 2:
-    #     split = grading_instruction["grader_score"].split(" ")
-    #     grader_score_1 = int(split[0])
-    #     grader_score_2 = int(split[1])
-    # else:
-    #     grader_score_1 = int(grading_instruction["grader_score"])
-    # grader_score = (grader_score_1, grader_score_2)
-
-    # if essay_set not in results:
-    #     results[essay_set] = [score]
-    #     ground_truths[essay_set] = [grader_score]
-    # else:
-    #     results[essay_set].append(score)
-    #     ground_truths[essay_set].append(grader_score)
-    pass
-
 def compute_kappa(ground_truths: list[int], predicted_results: list[int]) -> float:
     from sklearn.metrics import cohen_kappa_score
     # Convert None to np.nan
@@ -1052,6 +1014,7 @@ def gre_qwk_analysis(gre_analysis_run_folder: str):
                 with open(f"/runs/{run_folder}/run.json", "r") as f:
                     output = json.load(f)
                     scores_per_domain_list = output["predicted_labels"]["scores_per_domain"]
+                    # ground_truths = output["ground_truths"]
                 # qwk_matrix will have rows = domains, cols = scores per domain
                 # initialize with 5 empty lists
                 qwk_matrix = [[] for _ in range(5)]
@@ -1269,7 +1232,7 @@ def inference_main(
         judge_matrix_handle.get()
     else:
         # gre_models_small = ["google/gemma-3-12b-it"]
-        gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B", "google/gemma-3-27b-it"]
+        gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "google/gemma-3-27b-it"]
         # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
         if model != "":
             gre_models_small = [model]

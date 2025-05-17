@@ -14,32 +14,76 @@ data = json.loads(output_str)
 matrix = np.array(data["matrix"])
 labels = [
   "human",
-  "gemma baseline + arguments",
-  "gemma baseline",
-  "gemma orchestration + arguments",
-  "gemma orchestration",
-  "llama baseline + arguments",
-  "llama baseline",
-  "llama orchestration + arguments",
-  "llama orchestration",
+  "gemma arg.",
+  "gemma",
+  "gemma MAGIC & arg.",
+  "gemma MAGIC",
+  "llama arg.",
+  "llama",
+  "llama MAGIC & arg.",
+  "llama MAGIC",
 ]
 
 for i in range(len(matrix)):
     matrix[i][i] = 0.5
 
-# 2) Plot
-sns.heatmap(
-    matrix,
-    annot=True,                # show values in cells
-    fmt=".2f",                 # number format
-    cmap="Greens",            # any matplotlib colormap
-    xticklabels=labels,    # use your column labels
-    yticklabels=labels     # use your row labels
+
+
+# ── Figure + Axes ─────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(12, 10))
+
+# ── Draw heatmap ─────────────────────────────────────────────────────────────
+cax = ax.imshow(matrix, cmap="Greens", interpolation="nearest", aspect="equal")
+
+
+# ── Annotate each cell with its value ─────────────────────────────────────────
+# pick a contrasting text color automatically
+thresh = (matrix.max() + matrix.min()) / 2.0
+for i in range(matrix.shape[0]):
+    for j in range(matrix.shape[1]):
+        val = matrix[i, j]
+        color = "white" if val > thresh else "black"
+        ax.text(
+            j, i,                       # x=j, y=i
+            f"{val:.2f}",               # formatted number
+            ha="center", va="center",
+            color=color,
+            fontsize=20
+        )
+
+
+# ── Move ticks to top ─────────────────────────────────────────────────────────
+ax.xaxis.set_ticks_position("top")
+ax.xaxis.set_label_position("top")
+
+# ── Set tick positions & labels ───────────────────────────────────────────────
+n = len(labels)
+ax.set_xticks(np.arange(n))
+ax.set_yticks(np.arange(n))
+ax.set_xticklabels(labels)
+ax.set_yticklabels(labels)
+
+# ── Style tick labels ─────────────────────────────────────────────────────────
+ax.tick_params(
+    axis="x",
+    labelsize=20,
+    labeltop=True,
+    labelbottom=False,
+    # pad=100            # ← give 10 points of extra spacing *above* the spine
 )
+ax.tick_params(axis="y", labelsize=20)
 
-# 3) Tweak and show
-# plt.gca().xaxis.tick_top()        # move x-labels to the top
+# ── Rotate + align x-labels in place ─────────────────────────────────────────
+for lbl in ax.get_xticklabels():
+    lbl.set_rotation(45)
+    lbl.set_ha("left")
+    lbl.set_rotation_mode("anchor")
 
-plt.xticks(rotation=45, ha="right")
+# ── Colorbar + layout ───────────────────────────────────────────────────────
+fig.colorbar(cax, ax=ax, shrink=0.8)
+
+# Optionally push out the top margin a bit more:
+fig.subplots_adjust(top=0.88)
+
 plt.tight_layout()
 plt.show()
