@@ -24,7 +24,7 @@ from .common import (
     ASAPOrchestratorPrompts,
 )
 
-INFERENCE_GPU_CONFIG = "A100-80GB:2"
+INFERENCE_GPU_CONFIG = "A100-80GB:1"
 
 if len(INFERENCE_GPU_CONFIG.split(":")) <= 1:
     N_INFERENCE_GPUS = int(os.environ.get("N_INFERENCE_GPUS", 2))
@@ -230,11 +230,8 @@ def inference_loop_baseline(
     import time
     import pandas as pd
     from sklearn.metrics import cohen_kappa_score
+    import csv
     
-    if add_argument_annotation:
-        run_folder = run_folder + "/with-argument-annotation"
-    else:
-        run_folder = run_folder + "/no-argument-annotation"
     os.makedirs(run_folder, exist_ok=True)
 
     results: list[int] = []
@@ -249,6 +246,15 @@ def inference_loop_baseline(
 
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
+
+    # Write to a csv file
+    csv_file = open(os.path.join(run_folder, "baseline_results.tsv"), "w")
+    csv_writer = csv.writer(csv_file, delimiter="\t")
+    # csv will have:
+    # essay_id (idx), score, human_score, feedback, human_feedback, raw_response
+    csv_writer.writerow(["essay_id", "score", "human_score", "feedback", "human_feedback", "raw_response"])
+
+
 
     for idx, grading_instruction in enumerate(eval_dataset):
         start_time = time.time()
@@ -284,8 +290,9 @@ def inference_loop_baseline(
             none_count += 1
             continue
         results.append(score)
+
+        csv_writer.writerow([idx, score, grading_instruction["score"], feedback, grading_instruction["essay_feedback"], content])
         
-        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         # Periodic writes
         if idx % 10 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
@@ -303,6 +310,8 @@ def inference_loop_baseline(
                 }
                 json.dump(output, tmp_outs)
                 VOLUME_CONFIG["/runs"].commit()
+        if limit is not None and idx >= limit:
+            break
 
     # Store data in a traceable format
     output = {
@@ -322,6 +331,7 @@ def inference_loop_baseline(
     outfile.close()
     raw_outputs.close()
     tmp_outs.close()
+    csv_file.close()
     VOLUME_CONFIG["/runs"].commit()
     if judge:
         llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
@@ -562,7 +572,6 @@ def inference_loop_orchestration_asap(
         results_per_essay_set[essay_set].append(score)
         print(Colors.GREEN + Colors.BOLD + f"Orchestrated scores: {results_per_essay_set}" + Colors.END)
 
-        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         # Periodic writes
         if (idx+1) % 10 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
@@ -618,16 +627,18 @@ def inference_loop_orchestration(
     add_argument_annotation: bool = False,
     adapters_repo: str = "",
     judge: bool = False,
+    ablations: list[int] = [1,2,3,4,5],
 ) -> dict:
     from datasets import load_dataset
     import time
     import pandas as pd
     from sklearn.metrics import cohen_kappa_score
-
-    if add_argument_annotation:
-        run_folder = run_folder + "/with-argument-annotation"
+    import csv
+    if ablations == [1,2,3,4,5]:
+        ablation_name = "ablation_all"
     else:
-        run_folder = run_folder + "/no-argument-annotation"
+        ablation_name = "ablation_" + "_".join([f"domain_{ablation}" for ablation in ablations])
+    run_folder = run_folder + f"/{ablation_name}"
     os.makedirs(run_folder, exist_ok=True)
 
     orchestrated_results: list[int] = []
@@ -645,6 +656,17 @@ def inference_loop_orchestration(
     n = min(len(eval_dataset), limit) if limit is not None else len(eval_dataset)
     times = np.zeros((n + 1, 1), dtype=np.float32)
 
+    # Write to a csv file
+    csv_file = open(os.path.join(run_folder, "ablation_results.tsv"), "w")
+    csv_writer = csv.writer(csv_file, delimiter="\t")
+    # csv will have:
+    # essay_id (idx), orchestrated_score, human_score, orchestrated_feedback, human_feedback, domain_1_score,..., domain_5_score, human_domain_1_score,..., human_domain_5_score, domain_1_feedback,..., domain_5_feedback, raw_response, avg_score
+    domain_scores_names = [f"domain_{i}_score" for i in range(1, 6)]
+    domain_feedbacks_names = [f"domain_{i}_feedback" for i in range(1, 6)]
+    human_scores_names = [f"human_domain_{i}_score" for i in range(1, 6)]
+    csv_writer.writerow(["essay_id", "orchestrated_score", "human_score", "orchestrated_feedback", "human_feedback", *domain_scores_names, *human_scores_names, *domain_feedbacks_names, "raw_response", "avg_score"])
+
+
     for idx, grading_instruction in enumerate(eval_dataset):
         start_time = time.time()
         # Has to be here to match length of orchestrated_results
@@ -655,6 +677,11 @@ def inference_loop_orchestration(
         domain_responses = []
         
         for rubric_item in [1, 2, 3, 4, 5]:
+            # Perform ablation
+            if rubric_item not in ablations:
+                domain_scores.append(np.nan)
+                domain_feedbacks.append("")
+                continue
             full_prompt = GREAgentPrompts.format_prompt_inference(grading_instruction, rubric_item, add_argument_annotation=add_argument_annotation)
             
             # Use the unified inference interface
@@ -680,7 +707,7 @@ def inference_loop_orchestration(
             feedback = try_extract_key("feedback", content, dtype=str)
             if score is None:
                 domain_scores.append(np.nan)
-                domain_feedbacks.append(None)
+                domain_feedbacks.append("")
                 none_count += 1
                 continue
             domain_scores.append(score)
@@ -707,6 +734,7 @@ def inference_loop_orchestration(
             )
         # Log the output
         raw_outputs.write(out_str)
+        
         # Prompt processing
         score = try_extract_key("score", content, dtype=int)
         feedback = try_extract_key("feedback", content, dtype=str)
@@ -719,8 +747,10 @@ def inference_loop_orchestration(
             continue
         orchestrated_results.append(score)
         print(Colors.GREEN + Colors.BOLD + f"Orchestrated scores: {orchestrated_results}" + Colors.END)
+        # essay_id (idx), orchestrated_score, human_score, orchestrated_feedback, human_feedback, domain_1_score,..., domain_5_score, human_domain_1_score,..., human_domain_5_score, domain_1_feedback,..., domain_5_feedback, raw_response, avg_score
+        human_domain_scores = [grading_instruction["aspect_1"], grading_instruction["aspect_2"], grading_instruction["aspect_3"], grading_instruction["aspect_4"], grading_instruction["aspect_5"]]
+        csv_writer.writerow([idx, score, grading_instruction["score"], feedback, grading_instruction["essay_feedback"], *domain_scores, *human_domain_scores, *domain_feedbacks, content, avg_domain_score])
 
-        times[idx] = (time.time() - start_time) * 1000  # Convert to milliseconds
         # Periodic writes
         if idx % 10 == 0:
             with open(os.path.join(run_folder, "tmp.json"), "w") as tmp_outs:
@@ -742,6 +772,8 @@ def inference_loop_orchestration(
                 }
                 json.dump(output, tmp_outs)
                 VOLUME_CONFIG["/runs"].commit()
+        if limit is not None and idx >= limit:
+            break
 
     # Store data in a traceable format
     output = {
@@ -761,51 +793,16 @@ def inference_loop_orchestration(
         "none_count": none_count,
     }
     outfile = open(os.path.join(run_folder, "run.json"), "w")
-    json.dump(output, outfile)
+    json.dump(output, outfile)  
     outfile.close()
     raw_outputs.close()
     tmp_outs.close()
+    csv_file.close()
     VOLUME_CONFIG["/runs"].commit()
     if judge:
         llm_as_judge.spawn(run_folder=run_folder, feedbacks=output["predicted_labels"]["feedbacks"])
     return output
 
-def linear_regression_analysis(run_folder: str, results_per_domain: list[list[int]], ground_truths: list[int]):
-    """
-    Merge results from different domains into a single regression model.
-    """
-    from sklearn.model_selection import train_test_split
-    from sklearn.linear_model import LinearRegression
-    from sklearn.metrics import cohen_kappa_score
-    # Convert from matrix (domain, essay) to matrix (essay, domain)
-    X = np.array(results_per_domain).T
-    # Result per essay (essay, 1)
-    y = np.array(ground_truths)
-    # Discard incomplete essays (columns with 1 or more NaNs)
-    mask_complete = ~np.isnan(X).any(axis=1)
-    X = X[mask_complete]
-    y = y[mask_complete]    
-    # Split into training and test sets
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.5, random_state=903)
-    # Regression model
-    model = LinearRegression()
-    model.fit(X_train, y_train)
-    y_pred = model.predict(X_test)
-    # Round to nearest integer
-    y_pred = np.round(y_pred).astype(int)
-    y_test = y_test.astype(int)
-    # Compute metrics
-    qwk = round(cohen_kappa_score(y_test, y_pred, weights="quadratic"), 4)
-    print(Colors.GREEN + Colors.BOLD + f"Final QWK: {qwk}" + Colors.END)
-    aggregated_output = {
-        "regression_coefficients": model.coef_.tolist(),
-        "regression_intercept": model.intercept_,
-        "predicted_labels": y_pred.tolist(),
-        "ground_truths": y_test.tolist(),
-        "qwk_summary": qwk,
-    }
-    with open(os.path.join(run_folder, "regression_output.json"), "w") as f:
-        json.dump(aggregated_output, f)
 
 
 @inference_app.function(
@@ -814,82 +811,23 @@ def linear_regression_analysis(run_folder: str, results_per_domain: list[list[in
     volumes=VOLUME_CONFIG,
     cpu=2.0,
 )
-def llm_as_judge(run_folder: str, feedbacks: list[str] = [], judge_run: str = ""):
+
+def llm_as_judge(run_folder: str):
     """
     Use an LLM as a judge to score a set of essays.
+    run_folder: folder where results were saved
     """
     from datasets import load_dataset
     from openai import OpenAI
     import pandas as pd
-    os.makedirs(run_folder, exist_ok=True)
-    if judge_run != "":
-        with open(f"/runs/{judge_run}/run.json", "r") as f:
-            output = json.load(f) 
-            feedbacks=output["predicted_labels"]["feedbacks"]
+    # os.makedirs(run_folder, exist_ok=True)
     eval_dataset = load_dataset("jjordanoc/gre-scoring-dataset", split="train")
-    client = OpenAI()
-    results = []
-    for idx, grading_instruction in enumerate(eval_dataset):
-        # Human will be 1, LLM will be 2
-        prompt = RubricJudgePrompts.format_prompt_judge(feedback_1=grading_instruction["essay_feedback"], 
-                                                  feedback_2=feedbacks[idx], 
-                                                  student_essay=grading_instruction["essay_text"], 
-                                                  task_directions=grading_instruction["task_directions"],
-                                                  prompt=grading_instruction["prompt"]
-                                                  )
-        response = client.beta.chat.completions.parse(
-            model="o4-mini",
-            reasoning_effort="high",
-            messages=[
-                {
-                    "role": "user", 
-                    "content": prompt
-                }
-            ],
-            response_format=RubricJudgePrompts.ResponseModel
-        )
-        decision = response.choices[0].message.content
-        # decision = try_extract_key("feedback_choice", response.choices[0].message.content, dtype=int)
-        # reasoning = try_extract_key("explanation", response.choices[0].message.content, dtype=str)
-        # if decision == 1:
-        #     print(Colors.RED + Colors.BOLD + f"Human is better" + Colors.END)
-        #     print(Colors.RED + Colors.BOLD + f"Reasoning: {reasoning}" + Colors.END)
-        #     human_wins += 1
-        # elif decision == 2:
-        #     print(Colors.GREEN + Colors.BOLD + f"LLM is better" + Colors.END)
-        #     print(Colors.GREEN + Colors.BOLD + f"Reasoning: {reasoning}" + Colors.END)
-        #     llm_wins += 1
-        try:
-            decision = json.loads(decision)
-            results.append(decision)
-            print(Colors.BOLD + f"Decision: {decision}" + Colors.END)
-        except:
-            print(Colors.RED + Colors.BOLD + f"Error parsing decision: {decision}" + Colors.END)
-
-    # print(Colors.GREEN + Colors.BOLD + f"LLM wins: {llm_wins}, Human wins: {human_wins}" + Colors.END)
-    output = {
-        "results": results,
-    }
-    with open(os.path.join(run_folder, "judge_output.json"), "w") as f:
-        json.dump(output, f)
-
-    # Analysis
-    df = pd.DataFrame(results)
-    counts = (
-        df
-        .apply(pd.Series.value_counts)   # rows = values (1,2), cols = c1…c5
-        .fillna(0)
-        .astype(int)
-        .T                                # now rows = c1…c5, cols = 1,2
-    )
-
-    # Compute win_rate = (# of 2s) / (total picks)
-    counts['win_rate'] = counts[2] / (counts[1] + counts[2])
-    counts = counts.rename(columns={1: "Human", 2: "LLM"})
-    counts.to_csv(os.path.join(run_folder, "criteria_counts_with_win_rate.csv"))
-    VOLUME_CONFIG["/runs"].commit()
-
-    return results
+    for model_path,_, filenames in os.walk(run_folder):
+        if "run.json" in filenames:
+            with open(os.path.join(model_path, "run.json"), "r") as f:
+                output = json.load(f) 
+                feedbacks=output["predicted_labels"]["feedbacks"]
+                llm_as_judge_helper("Human", "LLM", eval_dataset["essay_feedback"], feedbacks, model_path)
 
 def llm_as_judge_helper(tag1: str, tag2: str, feedbacks1: list[str], feedbacks2: list[str], run_folder: str):
     """
@@ -1100,13 +1038,13 @@ def inference_vllm(
     model_handle: str,
     few_shot_n: int = 0,
     limit: Optional[int] = None,
-    add_argument_annotation: bool = False,
     adapters_repo: str = "",
     baseline: bool = False,
     orchestration: bool = False,
     judge: bool = False,
     run_folder: str = "",
     asap: bool = False,
+    ablations: Optional[list[int]] = None,
 ):
     from datetime import datetime
     import numpy as np
@@ -1121,25 +1059,26 @@ def inference_vllm(
     inference_engine = UnifiedInference(
         model_name=model_handle, adapters_repo=adapters_repo
     )
-    if asap:
-        # inference_loop_baseline_asap(
-        #     run_folder=baseline_folder,
-        #     inference=inference_engine,
-        #     few_shot_n=few_shot_n,
-        #     limit=limit,
-        #     add_argument_annotation=False,
-        #     adapters_repo=adapters_repo,
-        # ) 
-        inference_loop_orchestration_asap(
-            run_folder=orchestration_folder,
-            inference=inference_engine,
-            few_shot_n=few_shot_n,
-            limit=limit,
-            add_argument_annotation=False,
-            adapters_repo=adapters_repo,
-        )
+    # if asap and baseline:
+    #     inference_loop_baseline_asap(
+    #         run_folder=baseline_folder,
+    #         inference=inference_engine,
+    #         few_shot_n=few_shot_n,
+    #         limit=limit,
+    #         add_argument_annotation=False,
+    #         adapters_repo=adapters_repo,
+    #     ) 
+    # if asap and orchestration:
+    #     inference_loop_orchestration_asap(
+    #         run_folder=orchestration_folder,
+    #         inference=inference_engine,
+    #         few_shot_n=few_shot_n,
+    #         limit=limit,
+    #         add_argument_annotation=False,
+    #         adapters_repo=adapters_repo,
+    #     )
 
-    if baseline:
+    if baseline and ablations is None:
         inference_loop_baseline(
             run_folder=baseline_folder,
             inference=inference_engine,
@@ -1147,18 +1086,8 @@ def inference_vllm(
             limit=limit,
             add_argument_annotation=False,
             adapters_repo=adapters_repo,
-            judge=judge,
+            judge=judge
         )   
-        if add_argument_annotation:
-            inference_loop_baseline(
-                run_folder=baseline_folder,
-                inference=inference_engine,
-                few_shot_n=few_shot_n,
-                limit=limit,
-                add_argument_annotation=True,
-                adapters_repo=adapters_repo,
-                judge=judge,
-            )
     if orchestration:
         inference_loop_orchestration(
             run_folder=orchestration_folder,
@@ -1168,18 +1097,9 @@ def inference_vllm(
             add_argument_annotation=False,
             adapters_repo=adapters_repo,
             judge=judge,
+            ablations=ablations
         )
-        if add_argument_annotation:
-            inference_loop_orchestration(
-                run_folder=orchestration_folder,
-                inference=inference_engine,
-                few_shot_n=few_shot_n,
-                limit=limit,
-                add_argument_annotation=True,
-                adapters_repo=adapters_repo,
-                judge=judge,
-            )
-       
+
     VOLUME_CONFIG["/runs"].commit()
 
 
@@ -1188,7 +1108,6 @@ def inference_main(
     model: str = "",
     shots: int = 0,
     limit: Optional[int] = None,
-    arguments: bool = False,
     adapters_repo: str = "",
     baseline: bool = False,
     orchestration: bool = False,
@@ -1197,8 +1116,10 @@ def inference_main(
     asap: bool = False,
     judge_matrix: bool = False,
     gre_analysis: bool = False,
+    final_ablation_agents: int = 0,
 ):
     from datetime import datetime
+    from itertools import combinations
     if model in SUPPORTED_MODELS:
         if adapters_repo == "":
             print(
@@ -1211,7 +1132,8 @@ def inference_main(
             f"{Colors.BOLD + Colors.BLUE}Fine-tune defaults to 0-shot{Colors.END}"
         )
     time_string = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    run_name = f"vllm-{model.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
+    # run_name = f"vllm-{model.replace(':', '-').replace('/', '-')}-{time_string}-{secrets.token_hex(2)}"
+    run_name = time_string
     run_folder = f"/runs/{run_name}"
     print(
         Colors.BLUE,
@@ -1225,24 +1147,39 @@ def inference_main(
         gre_analysis_handle = gre_qwk_analysis.spawn(gre_analysis_run_folder="/runs/gre-analysis")
         gre_analysis_handle.get()
     elif judge and judge_run != "":
-        judge_handle = llm_as_judge.spawn(run_folder=run_folder, judge_run=judge_run)
+        judge_handle = llm_as_judge.spawn(run_folder="/runs/"+judge_run)
         judge_handle.get()
     elif judge_matrix:
         judge_matrix_handle = llm_as_judge_matrix.spawn(matrix_run_folder=run_folder)
         judge_matrix_handle.get()
+    elif final_ablation_agents > 0:
+        gre_model = "google/gemma-3-12b-it"
+        # 2 agents
+        for combination in combinations(range(1,6), final_ablation_agents):
+            inference_vllm.spawn(
+                gre_model,
+                run_folder=run_folder + f"/{gre_model.replace('/', '-').replace(':', '-')}",
+                few_shot_n=shots,   
+                limit=limit,
+                adapters_repo=adapters_repo,    
+                baseline=baseline,
+                orchestration=orchestration,
+                judge=judge,
+                asap=asap,
+                ablations=list(combination)
+            )
     else:
         # gre_models_small = ["google/gemma-3-12b-it"]
-        gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "google/gemma-3-27b-it"]
+        gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "google/gemma-3-12b-it", "google/gemma-3-27b-it", "meta-llama/Llama-3.3-70B-Instruct"]
         # gre_models_small = ["meta-llama/Llama-3.1-8B-Instruct", "deepseek-ai/DeepSeek-R1-Distill-Llama-8B"]
         if model != "":
             gre_models_small = [model]
         for gre_model in gre_models_small:
             inference_vllm.spawn(
                 gre_model,
-                run_folder=run_folder,
+                run_folder=run_folder + f"/{gre_model.replace('/', '-').replace(':', '-')}",
                 few_shot_n=shots,   
                 limit=limit,
-                add_argument_annotation=arguments,
                 adapters_repo=adapters_repo,    
                 baseline=baseline,
                 orchestration=orchestration,
