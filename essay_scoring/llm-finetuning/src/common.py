@@ -350,6 +350,7 @@ Your output should be a JSON in the following format:
         c3: int
         c4: int
         c5: int
+        summary: list[str]
 
     @classmethod
     def dump_prompts(cls) -> dict:
